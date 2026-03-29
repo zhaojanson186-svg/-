@@ -4,14 +4,15 @@ import pandas as pd
 import io
 import requests
 import concurrent.futures
+import time
 
 # ==========================================
 # 1. 网页全局设置
 # ==========================================
-st.set_page_config(page_title="抗体核心分析中台 V15", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="抗体核心分析中台 V15.1", page_icon="🧬", layout="wide")
 
-st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V15 极速版)")
-st.info("💡 核心管线版：引入并发多线程极速扫库，新增 Fv 链间电荷不对称性 (ΔpI) 排雷模块。专注极致的数据处理速度与成药性预警。")
+st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V15.1 稳定版)")
+st.info("💡 修复了高并发下的 API 断连熔断机制，重构了精准降级提取算法。新增 Fv 链间电荷不对称性 (ΔpI) 排雷模块。")
 
 # ==========================================
 # 2. 深度 CMC 评估与序列分析引擎
@@ -94,21 +95,26 @@ def detect_ptms_detailed(seq, cdrs, domain_type):
     return " | ".join(found_ptms) if found_ptms else "✅ 无常见高危 PTM"
 
 # ==========================================
-# 3. 提取引擎 (API vs 正则)
+# 3. 提取引擎 (修复降级 Bug)
 # ==========================================
-def extract_cdrs_via_api(seq):
+def extract_cdrs_via_api(seq, chain_type="VH"):
+    """【核心修复】：传入 chain_type，确保 API 失败时精准降级，绝不混用正则"""
     api_url = "https://api.antibody-informatics.org/v1/anarci/annotate"
     payload = {"sequence": seq, "scheme": "imgt"}
     try:
-        response = requests.post(api_url, json=payload, headers={"Content-Type": "application/json"}, timeout=3)
+        # 添加微小延迟，防止并发过高被服务器掐断
+        time.sleep(0.1)
+        response = requests.post(api_url, json=payload, headers={"Content-Type": "application/json"}, timeout=5)
         if response.status_code == 200:
             data = response.json()
             return { "CDR1": data.get("CDR1", "未识别"), "CDR2": data.get("CDR2", "未识别"), "CDR3": data.get("CDR3", "未识别") }
         else: raise Exception("API 异常")
     except Exception:
-        if "M" in seq or "L" in seq:
-             return extract_vh_cdrs_regex(seq) if seq.startswith("E") or seq.startswith("Q") else extract_vl_cdrs_regex(seq)
-        return extract_vh_cdrs_regex(seq)
+        # 降级时不再猜首字母，直接根据传入的真实类型匹配
+        if chain_type == "VH":
+            return extract_vh_cdrs_regex(seq)
+        else:
+            return extract_vl_cdrs_regex(seq)
 
 def extract_vh_cdrs_regex(vh_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
@@ -134,7 +140,8 @@ def extract_vl_cdrs_regex(vl_seq):
 def parse_fasta(text):
     sequences = {}
     if ">" not in text:
-        sequences["未命名序列_1"] = re.sub(r'\s+', '', text).upper()
+        # 如果没有表头，自动分配一个随机的名字，但如果是多条序列黏在一起，最好提示用户加 FASTA 格式
+        sequences["未命名待测序列_1"] = re.sub(r'\s+', '', text).upper()
         return sequences
     for part in text.split(">"):
         if not part.strip(): continue
@@ -143,20 +150,16 @@ def parse_fasta(text):
         if name and seq: sequences[name] = seq
     return sequences
 
-# 预编译正则，提升多线程效率
 vh_pattern = re.compile(r"([EQ].{100,135}VTVSS)")
 vl_pattern = re.compile(r"([DEQA].{95,125}(?:VEIK|LEIK|TVLG|VTVL|FGC))")
 fc_pattern = re.compile(r"(CPPCP.*?LSPGK)")
 
-# ==========================================
-# 新增：单条序列并发处理核心函数
-# ==========================================
 def process_single_seq(seq_name, clean_seq, use_api):
-    """供线程池调用的单分子解析器"""
     results = []
     
     for i, vh in enumerate(vh_pattern.findall(clean_seq)):
-        cdrs = extract_cdrs_via_api(vh) if use_api else extract_vh_cdrs_regex(vh)
+        # 传入 "VH" 标识
+        cdrs = extract_cdrs_via_api(vh, "VH") if use_api else extract_vh_cdrs_regex(vh)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
         results.append({
             "序列名称 (ID)": seq_name, "区域": f"VH_{i+1}", "类型": "重链/纳米抗体",
@@ -166,7 +169,8 @@ def process_single_seq(seq_name, clean_seq, use_api):
             "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": vh
         })
     for i, vl in enumerate(vl_pattern.findall(clean_seq)):
-        cdrs = extract_cdrs_via_api(vl) if use_api else extract_vl_cdrs_regex(vl)
+        # 传入 "VL" 标识
+        cdrs = extract_cdrs_via_api(vl, "VL") if use_api else extract_vl_cdrs_regex(vl)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
         results.append({
             "序列名称 (ID)": seq_name, "区域": f"VL_{i+1}", "类型": "轻链",
@@ -226,7 +230,7 @@ st.markdown("### 🔬 模块二：多线程序列解析与 CMC 排雷引擎")
 
 col1, col2 = st.columns([3, 1])
 with col1:
-    raw_input = st.text_area("📥 请在此粘贴需要评估的候选序列 (支持混合文本或 FASTA 格式):", height=250, key="main_input")
+    raw_input = st.text_area("📥 请在此粘贴需要评估的候选序列 (最好使用带 > 的 FASTA 格式，以便识别配对关系):", height=250, key="main_input")
 with col2:
     st.markdown("##### ⚙️ 引擎设置")
     engine_choice = st.radio("选择底层提取引擎：", 
@@ -241,13 +245,14 @@ if analyze_btn:
     if raw_input:
         seq_dict = parse_fasta(raw_input)
         total_seqs = len(seq_dict)
-        st.success(f"✅ 成功读取 {total_seqs} 条输入序列，正在启动多线程并发扫库...")
+        st.success(f"✅ 成功读取 {total_seqs} 条输入序列，正在启动并发扫库...")
         
         all_results = []
         progress_bar = st.progress(0)
         
-        # 【核心升级】：启用线程池并发处理 (提速 10 倍以上)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        # 【核心升级】：如果是 API 模式，限制并发为 3 保护对方服务器；如果是本地，放开并发限制。
+        workers = 3 if use_api else 8
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_seq = {executor.submit(process_single_seq, name, seq, use_api): name for name, seq in seq_dict.items()}
             
             completed = 0
@@ -276,15 +281,15 @@ if analyze_btn:
             st.markdown("#### 📊 CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
-            # --- 【核心升级】：分子水平 Fv 质控 (电荷不对称性计算) ---
+            # --- 分子水平 Fv 质控 (电荷不对称性计算) ---
             paired_data = []
             grouped = df.groupby('序列名称 (ID)')
             for name, group in grouped:
                 vh_rows = group[group['类型'].str.contains('重链')]
                 vl_rows = group[group['类型'].str.contains('轻链')]
                 
+                # 只有当该 ID 下同时存在 VH 和 VL 时，才会触发配对质控计算！
                 if not vh_rows.empty and not vl_rows.empty:
-                    # 取第一对识别出的 VH 和 VL 进行比对
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
                     vl_pi = vl_rows.iloc[0]['pI (等电点)']
                     delta_pi = abs(vh_pi - vl_pi)
@@ -303,8 +308,10 @@ if analyze_btn:
             
             if not df_paired.empty:
                 st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对电荷分析)")
-                st.caption("系统自动提取同一分子下的重轻链，计算等电点差异。差异过大(>2.0)会导致成药浓缩时出现严重的胶体不稳定性。")
+                st.caption("系统提取了具有配对关系的重轻链，计算等电点差异。如果此处未显示某些分子，请确保输入序列时带有统一的 `>分子名` FASTA 表头。")
                 st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态']), use_container_width=True)
+            else:
+                st.info("💡 Fv 质控雷达待命：本次解析未检测到配对的重/轻链。如果您想计算 Fv 配对数据，请确保输入的重链和轻链属于同一个 `>序列名`。")
 
             # --- 序列聚类统计 ---
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
@@ -329,7 +336,7 @@ if analyze_btn:
                 if not cluster_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='基于CDR3同源聚类')
             
             st.markdown("#### 📥 报告导出")
-            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V15.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V15.1.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         else:
             st.warning("⚠️ 未能在输入的文本中识别出标准抗体片段，请检查序列是否完整。")
     else:
