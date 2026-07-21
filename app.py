@@ -315,8 +315,8 @@ if analyze_btn:
             
             # --- 智能名称清洗：自动剥离重轻链后缀，提取核心分子ID进行配对 ---
             def extract_base_name(name):
-                # 正则匹配末尾的 _VH, -VL, _Heavy_chain 等标识并剔除
-                return re.sub(r'[-_](?i)(VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name).strip()
+                # 正则匹配末尾的 _VH, -VL, _Heavy_chain 等标识并剔除，(?i) 必须放在最开头
+                return re.sub(r'(?i)[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name).strip()
             df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
             
             # --- 数据高亮与美化 ---
