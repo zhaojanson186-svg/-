@@ -11,8 +11,8 @@ import time
 # ==========================================
 st.set_page_config(page_title="抗体核心分析中台 V15.2", page_icon="🧬", layout="wide")
 
-st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V15.2 终极精准版)")
-st.info("💡 核心升级：引入 FASTA 名称智能分型直通车，实现 100% 无损全量捕获；重构 Cys 锚定 CDR3 切片引擎，彻底根治 FR3 吞噬与异常超长 Bug。")
+st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V15.2 精准 CDR PTM 过滤版)")
+st.info("💡 核心升级：已优化 PTM 分析引擎，实现**仅对发生在高变异区（CDR1/CDR2/CDR3）的高危 PTM 风险进行精准靶向预警**，滤除框架区（FR）干扰。")
 
 # ==========================================
 # 2. 深度 CMC 评估与序列分析引擎
@@ -79,7 +79,7 @@ def get_region_finder(seq, cdrs, domain_type):
         if idx1 != -1 and i < idx1: return "FR1"
         if idx1 != -1 and i < idx1 + len(c1): return "CDR1"
         if idx1 != -1 and idx2 != -1 and i < idx2: return "FR2"
-        if idx2 != -1 and idx2 + len(c2): return "CDR2"
+        if idx2 != -1 and i < idx2 + len(c2): return "CDR2"
         if idx2 != -1 and idx3 != -1 and i < idx3: return "FR3"
         if idx3 != -1 and i < idx3 + len(c3): return "CDR3"
         if idx3 != -1 and i >= idx3 + len(c3): return "FR4"
@@ -87,14 +87,19 @@ def get_region_finder(seq, cdrs, domain_type):
     return region_of
 
 def detect_ptms_detailed(seq, cdrs, domain_type):
+    """【严格优化】：只保留并提示发生在 CDR 区域（CDR1、CDR2、CDR3）上的高危 PTM 风险"""
+    if "Fc" in domain_type: return "✅ 无 CDR PTM (Fc区)"
     region_finder = get_region_finder(seq, cdrs, domain_type)
     ptm_rules = {"N-糖基化": r"N[^P][ST]", "脱氨基": r"N[GSN]", "异构化": r"D[GS]", "酸断裂": r"DP", "氧化": r"M"}
     found_ptms = []
     for ptm_name, pattern in ptm_rules.items():
         for match in re.finditer(pattern, seq):
-            found_ptms.append(f"[{region_finder(match.start())}] {ptm_name}({match.group()}) @{match.start()+1}")
+            region_name = region_finder(match.start())
+            # 严格过滤：只收录位于 CDR 区域内的修饰
+            if region_name.startswith("CDR"):
+                found_ptms.append(f"[{region_name}] {ptm_name}({match.group()}) @{match.start()+1}")
     found_ptms.sort(key=lambda x: int(re.search(r'@(\d+)', x).group(1)) if re.search(r'@(\d+)', x) else 0)
-    return " | ".join(found_ptms) if found_ptms else "✅ 无常见高危 PTM"
+    return " | ".join(found_ptms) if found_ptms else "✅ 无 CDR 高危 PTM"
 
 # ==========================================
 # 3. 提取引擎 (重构 Cys 锚定精准切片)
@@ -115,8 +120,6 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
 
 def extract_vh_cdrs_regex(vh_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
-    
-    # 【核心升级】：利用保守的 Cys 锚定 CDR3，严格限制长度在 5-25 之间，绝不吞噬 FR3
     cdr3_match = re.search(r"C([A-Z]{5,25})(?=W[GS][A-Z][GTSVI]|WG[QA]G|W[GS]G)", vh_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
@@ -125,13 +128,10 @@ def extract_vh_cdrs_regex(vh_seq):
     
     cdr2_match = re.search(r"(?:[ELKDR][A-Z]{0,1}W[IVLMST][A-Z]{1,2}|REG[VLIA][A-Z]|RWV[A-Z])(.{8,30}?)[RKQ][VFSILAM][TVILAMFSC][A-Z]?", vh_seq)
     if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
-    
     return cdrs
 
 def extract_vl_cdrs_regex(vl_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
-    
-    # 【核心升级】：轻链 CDR3 采用末端 Cys 精准锚定，限制长度在 4-20 之间
     cdr3_match = re.search(r"C([A-Z]{4,20})(?=F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
@@ -141,7 +141,6 @@ def extract_vl_cdrs_regex(vl_seq):
     cdr2_match = re.search(r"[ILVM][A-Z]([A-Z]{7})G[A-Z]P", vl_seq)
     if not cdr2_match: cdr2_match = re.search(r"W[YFL].{10,22}?([A-Z]{7})G[A-Z]{1,2}[RFS]", vl_seq)
     if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
-    
     return cdrs
 
 def parse_fasta(text):
@@ -159,8 +158,6 @@ def parse_fasta(text):
 def process_single_seq(seq_name, clean_seq, use_api):
     results = []
     upper_name = seq_name.upper()
-    
-    # 【核心升级】：直接根据 FASTA 名称判断链类型，实现 100% 全量捕获，绝不丢失链
     is_vh = any(k in upper_name for k in ['VH', 'HC', 'HEAVY', '重链'])
     is_vl = any(k in upper_name for k in ['VL', 'LC', 'LIGHT', '轻链'])
     is_fc = 'FC' in upper_name
@@ -193,7 +190,6 @@ def process_single_seq(seq_name, clean_seq, use_api):
             "CDR1": "-", "CDR2": "-", "CDR3": "-", "完整序列": clean_seq
         })
     else:
-        # 兼容没有明显名字后缀的兜底切片匹配
         vh_pattern = re.compile(r"([EQ].{100,135}VTVSS|[EQ].{100,135}VTVSA)")
         vl_pattern = re.compile(r"([DEQA].{95,125}(?:VEIK|LEIK|LELK|TVLG|VTVL|FGC))")
         for i, vh in enumerate(vh_pattern.findall(clean_seq)):
@@ -297,12 +293,10 @@ if analyze_btn:
             st.markdown("#### 📊 CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
-            # 智能剥离后缀匹配归属分子名 (使用标准的 flags=re.IGNORECASE 解决 Python 3.11+ 兼容性)
             def extract_base_name(name):
                 return re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name, flags=re.IGNORECASE).strip()
             df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
             
-            # Fv 链间电荷不对称性 (ΔpI) 计算
             paired_data = []
             for name, group in df.groupby('归属分子名'):
                 vh_rows = group[group['类型'].str.contains('重链')]
@@ -322,7 +316,6 @@ if analyze_btn:
                 st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对电荷分析)")
                 st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态']), use_container_width=True)
             
-            # CDR3 核心指纹与多样性分析
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
             df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)].copy()
             if not df_valid_cdr3.empty:
