@@ -46,24 +46,61 @@ def detect_unpaired_cysteine(seq):
     return "✅ 正常 (2个 Cys)"
 
 def guess_germline(seq):
-    seq = seq.upper()[:50]
+    seq = seq.upper()[:60] # 适度加长扫描窗口
+    
+    # 1. 纳米抗体 (VHH)
     if re.search(r'GGGSVQ', seq) or re.search(r'W[FY]RQAPGKERE', seq): return "Camelid VHH (纳米抗体)"
-    if re.search(r'SGGGLVQ', seq): return "Human IGHV3 (高人源化)"
-    if re.search(r'SGAEVKKPG', seq): return "Human IGHV1/5 (高人源化)"
-    if re.search(r'SGSELKKPG', seq): return "Human IGHV7 (高人源化)"
-    if re.search(r'SGPGLVKPSG', seq): return "Human IGHV4 (高人源化)"
-    if re.search(r'SGPEVKKPG', seq): return "Human IGHV2 (高人源化)"
-    if re.search(r'QQSG[AP]E[LV]V', seq) or re.search(r'QQSDA', seq) or re.search(r'GSLKLS', seq): return "Murine IGHV (鼠源)"
+    
+    # 2. 高人源化抗体 (Humanized) - 特征明显的 FR1
+    if re.search(r'SGGGLVQ', seq) or re.search(r'EVQLVESGGGLVQPGGSLRLSC', seq): return "Human IGHV3 (高人源化)"
+    if re.search(r'QVQLVQSGAEVKKPG', seq): return "Human IGHV1/5 (高人源化)"
+    if re.search(r'QVQLVQSGSELKKPG', seq): return "Human IGHV7 (高人源化)"
+    if re.search(r'QVQLQESGPGLVKPSG', seq): return "Human IGHV4 (高人源化)"
+    if re.search(r'QVQLQESGP[AE]VKKPG', seq): return "Human IGHV2 (高人源化)"
+    if re.search(r'DIQMTQSPSSLSASVG', seq): return "Human IGKV1/3 (高人源化)"
+    if re.search(r'DIVMTQSPLSLPVTPG', seq): return "Human IGKV2 (高人源化)"
+    if re.search(r'DIVMTQSP[DS]SLA[VS]SLG', seq): return "Human IGKV4 (高人源化)"
+    
+    # 3. 鼠源重链 (Murine IGHV)
+    if re.search(r'V[KR][LMI]SC', seq) or \
+       re.search(r'GGLVKPGGSLKLSC', seq) or \
+       re.search(r'[EQD][AIV]QL[QVESLI]{1,3}SG[A-Z]{2,6}[KV][RP]G', seq) or \
+       re.search(r'VQL[KQE]ESGPGLVAP', seq) or \
+       re.search(r'QIQL[VI]QSGPELK', seq) or \
+       re.search(r'VTL[KQE]ESGPG', seq) or \
+       re.search(r'QSLS[IL]TCTVS', seq) or \
+       re.search(r'QSLSLTCSVT', seq) or \
+       re.search(r'QTLSLTCSFS', seq): 
+        return "Murine IGHV (鼠源)"
+        
+    # 4. 鼠源轻链 (Murine IGKV)
+    if re.search(r'VT[MI]TC[KSR]AS', seq) or \
+       re.search(r'VSITC[KSR]A', seq) or \
+       re.search(r'VSISC[KSR]A', seq) or \
+       re.search(r'[DQ]IV[LM][ST]QSQKF', seq) or \
+       re.search(r'QIVL[ST]QSPA[IL]MS', seq) or \
+       re.search(r'[DQ]IV[LM]TQSPA[IL]MS', seq) or \
+       re.search(r'D[ITV]V[LM]TQ[ST]P[AL]SL', seq) or \
+       re.search(r'DIQMTQTTSSLS', seq) or \
+       re.search(r'DIQMTQSPASLS', seq) or \
+       re.search(r'DIVMTQSPKFMST', seq):
+        return "Murine IGKV (鼠源)"
+        
+    # 5. Lambda 链
+    if re.search(r'Q[SA]VLTQPPS[AS]SG', seq) or re.search(r'Q[PP]SVS[VAS]P', seq): return "Human IGLV (Lambda)"
+    
+    # 6. 保底 / 亚族未定
     if re.search(r'VQL[VQE]QSG', seq) or re.search(r'VQL[LVE]ESG', seq): return "IGHV (亚族未定)"
-    if re.search(r'SP[SS][SF]LSASVG', seq): return "Human IGKV1/3 (高人源化)"
-    if re.search(r'SPLSLPVTPG', seq): return "Human IGKV2 (高人源化)"
-    if re.search(r'SP[DS]SLA[VS]SLG', seq): return "Human IGKV4 (高人源化)"
-    if re.search(r'SP[SA]YLAASP', seq) or re.search(r'FMSTSVG', seq): return "Murine IGKV (鼠源)"
     if re.search(r'[DE][IV][VQAM][ML]TQS', seq): return "IGKV (亚族未定)"
-    if re.search(r'QPPS[AS]SG', seq) or re.search(r'Q[PP]SVS[VAS]P', seq): return "Human IGLV (Lambda)"
     if re.search(r'LTQP', seq): return "IGLV (Lambda未定)"
-    if seq.startswith('Q') or seq.startswith('E'): return "疑似重链 (高度变异)"
-    if seq.startswith('D') or seq.startswith('A'): return "疑似轻链 (高度变异)"
+    
+    # 7. 极端变异体兜底推断
+    if seq.startswith('Q') or seq.startswith('E') or seq.startswith('D') or seq.startswith('G'): 
+        if 'WGQG' in seq or 'WGRG' in seq or 'VTVSS' in seq or 'VTVSA' in seq or 'WVRQ' in seq or 'WVKQ' in seq:
+            return "疑似重链 (高度变异)"
+        if 'FGQG' in seq or 'FGG' in seq or 'FGS' in seq or 'FGA' in seq or 'LEIK' in seq or 'LELK' in seq or 'WYQQ' in seq:
+            return "疑似轻链 (高度变异)"
+            
     return "未知架构"
 
 def get_region_finder(seq, cdrs, domain_type):
