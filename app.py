@@ -313,17 +313,23 @@ if analyze_btn:
         if all_results:
             df = pd.DataFrame(all_results)
             
+            # --- 智能名称清洗：自动剥离重轻链后缀，提取核心分子ID进行配对 ---
+            def extract_base_name(name):
+                # 正则匹配末尾的 _VH, -VL, _Heavy_chain 等标识并剔除
+                return re.sub(r'[-_](?i)(VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name).strip()
+            df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
+            
             # --- 数据高亮与美化 ---
             def highlight_alerts(val):
                 val_str = str(val)
-                if '🚨' in val_str or '高危' in val_str or '脱氨基' in val_str or '异构化' in val_str:
+                if '🚨' in val_str or '高危' in val_str or '脱氨基' in val_str or '异构化' in val_str or '重复' in val_str:
                     return 'background-color: #ffcccc; color: #990000; font-weight: bold'
-                elif '⚠️' in val_str or '氧化' in val_str:
+                elif '⚠️' in val_str or '氧化' in val_str or '冗余' in val_str:
                     return 'background-color: #fff2cc; color: #b26b00'
                 return ''
             
             st.markdown("#### 📊 1. CMC 序列解析总表")
-            st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
+            st.dataframe(df.drop(columns=['归属分子名']).style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
             # ==========================================
             # 新增核心功能：CDR3 核心指纹与多样性聚类
@@ -368,34 +374,68 @@ if analyze_btn:
                 PTM风险=('PTM 风险预警', 'first'), CDR3=('CDR3', 'first')
             ).reset_index().sort_values(by=['链类型', '相同序列数'], ascending=[True, False])
 
-            # --- 分子水平 Fv 质控 (电荷不对称性计算) ---
+            # --- 核心升级：完整抗体分子 (Fv) 智能组装与唯一性 (Unique) 判断 ---
             paired_data = []
-            grouped = df.groupby('序列名称 (ID)')
+            grouped = df.groupby('归属分子名')
             for name, group in grouped:
                 vh_rows = group[group['类型'].str.contains('重链')]
                 vl_rows = group[group['类型'].str.contains('轻链')]
+                
+                # 当【归属同一个分子名】下同时存在 VH 和 VL 时，进行双链组装
                 if not vh_rows.empty and not vl_rows.empty:
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
                     vl_pi = vl_rows.iloc[0]['pI (等电点)']
+                    vh_seq = vh_rows.iloc[0]['完整序列']
+                    vl_seq = vl_rows.iloc[0]['完整序列']
+                    vh_cdr3 = vh_rows.iloc[0]['CDR3']
+                    vl_cdr3 = vl_rows.iloc[0]['CDR3']
+                    
                     delta_pi = abs(vh_pi - vl_pi)
-                    warning_flag = "🚨 高危: ΔpI > 2.0 (易发生配对错乱或自发聚集沉淀)" if delta_pi > 2.0 else "✅ 正常 (电荷分布对称)"
+                    warning_flag = "🚨 高危: ΔpI > 2.0 (易发生配对错乱)" if delta_pi > 2.0 else "✅ 正常 (电荷分布对称)"
+                    
                     paired_data.append({
-                        "来源分子名称 (ID)": name, "重链 (VH) pI": vh_pi, "轻链 (VL) pI": vl_pi,
-                        "ΔpI (电荷不对称性)": round(delta_pi, 2), "Fv 链间质控状态": warning_flag
+                        "核心分子名 (ID)": name,
+                        "重链 (VH) pI": vh_pi,
+                        "轻链 (VL) pI": vl_pi,
+                        "ΔpI (电荷不对称性)": round(delta_pi, 2),
+                        "Fv 链间质控状态": warning_flag,
+                        "VH_完整序列": vh_seq,
+                        "VL_完整序列": vl_seq,
+                        "VH_CDR3": vh_cdr3,
+                        "VL_CDR3": vl_cdr3
                     })
             
             df_paired = pd.DataFrame(paired_data)
+            
             if not df_paired.empty:
-                st.markdown("#### ⚖️ 3. 分子水平 Fv 质控 (VH-VL 配对电荷分析)")
-                st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态']), use_container_width=True)
+                # 拼接 VH 和 VL 序列生成该双链分子的“绝对序列指纹”
+                df_paired['Fv_指纹'] = df_paired['VH_完整序列'] + "||" + df_paired['VL_完整序列']
+                
+                # 依据分子指纹进行聚类计算，找出 Unique Fv 分子
+                cluster_fv = df_paired.groupby('Fv_指纹').agg(
+                    出现频次=('核心分子名 (ID)', 'count'),
+                    是否唯一=('核心分子名 (ID)', lambda x: "✅ 唯一分子 (Unique)" if len(x) == 1 else "⚠️ 冗余克隆 (Duplicate)"),
+                    同源分子重叠名单=('核心分子名 (ID)', lambda x: ', '.join(x.unique())),
+                    重链_CDR3=('VH_CDR3', 'first'),
+                    轻链_CDR3=('VL_CDR3', 'first'),
+                    ΔpI_电荷不对称性=('ΔpI (电荷不对称性)', 'first'),
+                    成药性质控=('Fv 链间质控状态', 'first')
+                ).reset_index().drop(columns=['Fv_指纹']).sort_values(by=['出现频次', '是否唯一'], ascending=[False, True])
+                
+                st.markdown("#### 🧩 3. 完整抗体双链 (Fv) 智能组装与唯一性聚类")
+                st.caption("系统已自动剔除前缀/后缀，将同属一个分子的 VH 和 VL 序列进行组装。下表直接为您提取了 **Unique 完整克隆库** 及其对应的双链配对成药性风险。")
+                st.dataframe(cluster_fv.style.map(highlight_alerts, subset=['成药性质控', '是否唯一']), use_container_width=True, hide_index=True)
+
+            else:
+                st.info("💡 完整分子组装雷达待命：本次解析未检测到配对的重/轻链。")
 
             # --- 导出模块 ---
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='单链_解析总表')
-                if not df_valid_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='CDR3_核心指纹聚类')
-                if not df_paired.empty: df_paired.to_excel(writer, index=False, sheet_name='配对_电荷不对称性(Fv)')
-                if not cluster_v.empty: cluster_v.to_excel(writer, index=False, sheet_name='全序列聚类去重')
+                df.drop(columns=['归属分子名']).to_excel(writer, index=False, sheet_name='1_单链_成药性解析总表')
+                if not df_valid_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='2_CDR3_多样性与长度聚类')
+                if not df_paired.empty: cluster_fv.to_excel(writer, index=False, sheet_name='3_完整分子(Fv)_唯一性分析')
+                if not cluster_v.empty: cluster_v.to_excel(writer, index=False, sheet_name='4_单链_全序列同源去重')
             
             st.markdown("#### 📥 4. 报告导出")
             st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V16.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
