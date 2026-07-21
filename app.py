@@ -1,4 +1,54 @@
 # ... existing code ...
+def detect_unpaired_cysteine(seq):
+    cys_positions = [i+1 for i, aa in enumerate(seq.upper()) if aa == 'C']
+    count = len(cys_positions)
+    if count % 2 != 0: return f"🚨 高危: 奇数({count})个 Cys @{cys_positions}"
+    elif count > 2 and count % 2 == 0: return f"⚠️ 警告: 额外配对({count})个 Cys @{cys_positions}"
+    return "✅ 正常 (2个 Cys)"
+
+def guess_germline(seq):
+    """增强版 Germline 推断（支持小鼠、羊驼及多种人源化变种突变）"""
+    seq = seq.upper()[:60] # 拉长扫描窗口
+    # 纳米抗体
+    if re.search(r'GGGSVQ', seq) or re.search(r'W[FY]RQAPGKERE', seq): return "Camelid VHH (纳米抗体)"
+    
+    # 鼠源特异性强探针 (Murine)
+    if re.search(r'QQSG[AP]E[LV]V', seq) or re.search(r'QQSDA', seq) or re.search(r'GSLKLS', seq): return "Murine IGHV (鼠源)"
+    if re.search(r'VK[IL]SC', seq) or re.search(r'V[KR]LSC', seq) or re.search(r'VTMSCK', seq): return "Murine IGHV (鼠源)"
+    if re.search(r'GGLVKPGGSL', seq) or re.search(r'GPELVRPGAS', seq) or re.search(r'GPGILQPSQT', seq): return "Murine IGHV (鼠源)"
+    
+    if re.search(r'SP[SA]YLAASP', seq) or re.search(r'FMSTSVG', seq) or re.search(r'FMSTTIG', seq): return "Murine IGKV (鼠源)"
+    if re.search(r'VTITCRAS', seq) or re.search(r'VSISCKAS', seq) or re.search(r'VTMTCSAS', seq) or re.search(r'VTMTC', seq): return "Murine IGKV (鼠源)"
+    if re.search(r'QIVLTQSP', seq) or re.search(r'DIVMTQSQ', seq) or re.search(r'DIVMTQSP', seq): return "Murine IGKV (鼠源)"
+    if re.search(r'QIVLSQSP', seq) or re.search(r'DIQMTQ', seq) or re.search(r'DTVLTQSP', seq): return "Murine IGKV (鼠源)"
+    if re.search(r'DILMTQSP', seq) or re.search(r'DIVLTQSP', seq) or re.search(r'DIVITQSP', seq): return "Murine IGKV (鼠源)"
+
+    # 高人源化探针 (Humanized)
+    if re.search(r'SGGGLVQ', seq): return "Human IGHV3 (高人源化)"
+    if re.search(r'SGAEVKKPG', seq): return "Human IGHV1/5 (高人源化)"
+    if re.search(r'SGSELKKPG', seq): return "Human IGHV7 (高人源化)"
+    if re.search(r'SGPGLVKPSG', seq): return "Human IGHV4 (高人源化)"
+    if re.search(r'SGPEVKKPG', seq): return "Human IGHV2 (高人源化)"
+    
+    if re.search(r'SP[SS][SF]LSASVG', seq): return "Human IGKV1/3 (高人源化)"
+    if re.search(r'SPLSLPVTPG', seq): return "Human IGKV2 (高人源化)"
+    if re.search(r'SP[DS]SLA[VS]SLG', seq): return "Human IGKV4 (高人源化)"
+    if re.search(r'QPPS[AS]SG', seq) or re.search(r'Q[PP]SVS[VAS]P', seq): return "Human IGLV (Lambda)"
+    
+    # 兜底匹配
+    if re.search(r'VQL[VQE]QSG', seq) or re.search(r'VQL[LVE]ESG', seq): return "IGHV (亚族未定)"
+    if re.search(r'[DE][IV][VQAM][ML]TQS', seq): return "IGKV (亚族未定)"
+    if re.search(r'LTQP', seq): return "IGLV (Lambda未定)"
+    
+    if seq.startswith('Q') or seq.startswith('E') or seq.startswith('G') or seq.startswith('D') or seq.startswith('V'): return "疑似重链 (高变异)"
+    if seq.startswith('D') or seq.startswith('A') or seq.startswith('Q'): return "疑似轻链 (高变异)"
+    
+    return "未知架构"
+
+def get_region_finder(seq, cdrs, domain_type):
+# ... existing code ...
+def detect_ptms_detailed(seq, cdrs, domain_type):
+# ... existing code ...
 # ==========================================
 # 3. 提取引擎 (修复降级 Bug + 高级正则增强)
 # ==========================================
@@ -12,7 +62,7 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
         response = requests.post(api_url, json=payload, headers={"Content-Type": "application/json"}, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            # 【新增】：提取底层引擎基于 IMGT 数据库比对出的种属和基因型
+            # 【核心升级】：提取底层引擎基于 IMGT 数据库比对出的种属和基因型
             species = str(data.get("species", "")).capitalize()
             v_gene = str(data.get("v_gene", ""))
             api_germline = f"{species} {v_gene}".strip() if (species or v_gene) else None
@@ -32,27 +82,24 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
             return extract_vl_cdrs_regex(seq)
 
 def extract_vh_cdrs_regex(vh_seq):
-    """优化后的重链 CDR 正则提取引擎"""
-    cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
 # ... existing code ...
-    cdr2_match = re.search(r"(?:[ELKDR][A-Z]{0,1}W[IVLMST][A-Z]{1,2}|REG[VLIA][A-Z]|RWV[A-Z])(.{8,30}?)[RKQ][VFSILAM][TVILAMFSC][A-Z]?", vh_seq)
-    if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
-    
-    return cdrs
-
 def extract_vl_cdrs_regex(vl_seq):
-    """优化后的轻链 CDR 正则提取引擎"""
-    cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
 # ... existing code ...
-    cdr2_match = re.search(r"[ILVM][A-Z]([A-Z]{7})G[A-Z]P", vl_seq)
-    if not cdr2_match: cdr2_match = re.search(r"W[YFL].{10,22}?([A-Z]{7})G[A-Z]{1,2}[RFS]", vl_seq)
-    if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
-    
-    return cdrs
-
 def parse_fasta(text):
-# ... existing code ...
-vl_pattern = re.compile(r"([DEQA].{95,125}(?:VEIK|LEIK|TVLG|VTVL|FGC))")
+    sequences = {}
+    if ">" not in text:
+        sequences["未命名待测序列_1"] = re.sub(r'\s+', '', text).upper()
+        return sequences
+    for part in text.split(">"):
+        if not part.strip(): continue
+        lines = part.strip().split("\n")
+        name, seq = lines[0].strip(), "".join(lines[1:]).replace(" ", "").upper()
+        if name and seq: sequences[name] = seq
+    return sequences
+
+# 增强型长序列捕获：兼容小鼠片段中特有的 G/D 头部起始，以及 VTVSA / LELK 等非经典收尾
+vh_pattern = re.compile(r"([EQGVD].{90,140}(?:VTVSS|VTVSA))")
+vl_pattern = re.compile(r"([DEQA].{90,130}(?:VEIK|LEIK|LELK|REIK|TVLG|VTVL|FGC))")
 fc_pattern = re.compile(r"(CPPCP.*?LSPGK)")
 
 def process_single_seq(seq_name, clean_seq, use_api):
@@ -76,7 +123,7 @@ def process_single_seq(seq_name, clean_seq, use_api):
         # 传入 "VL" 标识
         cdrs = extract_cdrs_via_api(vl, "VL") if use_api else extract_vl_cdrs_regex(vl)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
-        # 【新增逻辑】
+        # 【新增逻辑】：轻链同样获取 IMGT 基因型
         final_germline = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(vl)
         
         results.append({
