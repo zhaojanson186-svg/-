@@ -148,9 +148,11 @@ def extract_vh_cdrs_regex(vh_seq):
     """优化后的重链 CDR 正则提取引擎"""
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
     
-    # CDR3 提取 (兼容更多结尾变体)
-    cdr3_match = re.search(r"Y[YFCAV][CST][A-Z]{1,3}(.*?)W[GS][A-Z][GTSVI]", vh_seq)
-    if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
+    # CDR3 提取 (更加精准的边界，防止贪婪匹配吞噬 FR3)
+    # 锚定保守的 YxC 结尾 (FR3末尾)，并要求 CDR3 内容通常在 5-30 个 AA 之间，直到遇到 WGxG (FR4起始)
+    cdr3_match = re.search(r"[YF][YFCAV][CAV][A-Z]{0,2}(.{5,30}?)W[GS][A-Z][GTSVI]", vh_seq)
+    if cdr3_match: 
+        cdrs["CDR3"] = cdr3_match.group(1)
     
     # CDR1 提取 (拓宽下游锚点，兼容 WVIQ 等罕见序列)
     cdr1_match = re.search(r"C[A-Z]{2,6}(.{5,16}?)W[VILFMA][A-Z]", vh_seq)
@@ -166,9 +168,11 @@ def extract_vl_cdrs_regex(vl_seq):
     """优化后的轻链 CDR 正则提取引擎"""
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
     
-    # CDR3 提取 (兼容突变的 YVC 锚点和 FGGGT 等非标准 FR4 结尾)
-    cdr3_match = re.search(r"Y[YFCAVS][CST](.*?)(?:F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
-    if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
+    # CDR3 提取 (更加精准的边界，防止贪婪匹配吞噬 FR3)
+    # 锚定保守的 YxC 结尾 (FR3末尾)，并要求 CDR3 内容直到遇到 FGxG (FR4起始)
+    cdr3_match = re.search(r"[YF][YFCAVS][CST](.{4,20}?)(?:F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
+    if cdr3_match: 
+        cdrs["CDR3"] = cdr3_match.group(1)
     
     # CDR1 提取
     cdr1_match = re.search(r"C(.{8,18}?)W[YFL]", vl_seq)
