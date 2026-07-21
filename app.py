@@ -158,11 +158,30 @@ def parse_fasta(text):
     if ">" not in text:
         sequences["未命名待测序列_1"] = re.sub(r'\s+', '', text).upper()
         return sequences
+        
+    name_counter = {}
     for part in text.split(">"):
         if not part.strip(): continue
         lines = part.strip().split("\n")
-        name, seq = lines[0].strip(), "".join(lines[1:]).replace(" ", "").upper()
-        if name and seq: sequences[name] = seq
+        raw_name = lines[0].strip()
+        seq = "".join(lines[1:]).replace(" ", "").upper()
+        if raw_name and seq:
+            # 【核心修复】：解决 FASTA 中存在同名序列导致字典覆盖漏掉序列的问题
+            if raw_name in name_counter:
+                name_counter[raw_name] += 1
+                # 智能插入后缀，例如将 _VH 变成 _Dup2_VH，确保后续 Fv 配对引擎正常工作
+                match = re.search(r'([-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light))$', raw_name, flags=re.IGNORECASE)
+                if match:
+                    suffix = match.group(1)
+                    base = raw_name[:-len(suffix)]
+                    name = f"{base}_Dup{name_counter[raw_name]}{suffix}"
+                else:
+                    name = f"{raw_name}_Dup{name_counter[raw_name]}"
+            else:
+                name_counter[raw_name] = 1
+                name = raw_name
+                
+            sequences[name] = seq
     return sequences
 
 def process_single_seq(seq_name, clean_seq, use_api):
