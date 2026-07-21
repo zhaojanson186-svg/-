@@ -102,7 +102,7 @@ def detect_ptms_detailed(seq, cdrs, domain_type):
     return " | ".join(found_ptms) if found_ptms else "✅ 无 CDR 高危 PTM"
 
 # ==========================================
-# 3. 提取引擎 (重构 Cys 锚定精准切片)
+# 3. 提取引擎 (Cys 锚定精准切片)
 # ==========================================
 def extract_cdrs_via_api(seq, chain_type="VH"):
     api_url = "https://api.antibody-informatics.org/v1/anarci/annotate"
@@ -112,15 +112,23 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
         response = requests.post(api_url, json=payload, headers={"Content-Type": "application/json"}, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            return { "CDR1": data.get("CDR1", "未识别"), "CDR2": data.get("CDR2", "未识别"), "CDR3": data.get("CDR3", "未识别") }
+            api_germline = f"{data.get('Species', '')} {data.get('V_gene', '')}".strip()
+            return { 
+                "CDR1": data.get("CDR1", "未识别"), 
+                "CDR2": data.get("CDR2", "未识别"), 
+                "CDR3": data.get("CDR3", "未识别"),
+                "API_Germline": api_germline if api_germline else None
+            }
         else: raise Exception("API 异常")
     except Exception:
         if chain_type == "VH": return extract_vh_cdrs_regex(seq)
         else: return extract_vl_cdrs_regex(seq)
 
 def extract_vh_cdrs_regex(vh_seq):
-    cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
-    cdr3_match = re.search(r"C([A-Z]{5,25})(?=W[GS][A-Z][GTSVI]|WG[QA]G|W[GS]G)", vh_seq)
+    cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
+    
+    # 严格 Cys 锚定的 CDR3 提取
+    cdr3_match = re.search(r"C([A-Z]{3,25})(?=W[GS][A-Z][GTSVI]|WG[QA]G|W[GS]G)", vh_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
     cdr1_match = re.search(r"C[A-Z]{2,6}(.{5,16}?)W[VILFMA][A-Z]", vh_seq)
@@ -131,8 +139,10 @@ def extract_vh_cdrs_regex(vh_seq):
     return cdrs
 
 def extract_vl_cdrs_regex(vl_seq):
-    cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
-    cdr3_match = re.search(r"C([A-Z]{4,20})(?=F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
+    cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
+    
+    # 严格 Cys 锚定的轻链 CDR3 提取
+    cdr3_match = re.search(r"C([A-Z]{3,20})(?=F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
     cdr1_match = re.search(r"C(.{8,18}?)W[YFL]", vl_seq)
@@ -140,7 +150,7 @@ def extract_vl_cdrs_regex(vl_seq):
     
     cdr2_match = re.search(r"[ILVM][A-Z]([A-Z]{7})G[A-Z]P", vl_seq)
     if not cdr2_match: cdr2_match = re.search(r"W[YFL].{10,22}?([A-Z]{7})G[A-Z]{1,2}[RFS]", vl_seq)
-    if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
+    if cdr2_match: cdr2_match = re.search(r"[ILVM][A-Z]([A-Z]{7})G[A-Z]P", vl_seq).group(1) if re.search(r"[ILVM][A-Z]([A-Z]{7})G[A-Z]P", vl_seq) else cdr2_match.group(1)
     return cdrs
 
 def parse_fasta(text):
@@ -165,9 +175,10 @@ def process_single_seq(seq_name, clean_seq, use_api):
     if is_vh:
         cdrs = extract_cdrs_via_api(clean_seq, "VH") if use_api else extract_vh_cdrs_regex(clean_seq)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
+        germline_val = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(clean_seq)
         results.append({
             "序列名称 (ID)": seq_name, "区域": "VH_1", "类型": "重链/纳米抗体",
-            "同源 Germline": guess_germline(clean_seq), "孤立Cys 雷达": detect_unpaired_cysteine(clean_seq),
+            "同源 Germline": germline_val, "孤立Cys 雷达": detect_unpaired_cysteine(clean_seq),
             "CDR_GRAVY": calculate_gravy(comb_cdr), "pI (等电点)": calculate_pi(clean_seq),
             "PTM 风险预警": detect_ptms_detailed(clean_seq, cdrs, "VH"),
             "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": clean_seq
@@ -175,9 +186,10 @@ def process_single_seq(seq_name, clean_seq, use_api):
     elif is_vl:
         cdrs = extract_cdrs_via_api(clean_seq, "VL") if use_api else extract_vl_cdrs_regex(clean_seq)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
+        germline_val = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(clean_seq)
         results.append({
             "序列名称 (ID)": seq_name, "区域": "VL_1", "类型": "轻链",
-            "同源 Germline": guess_germline(clean_seq), "孤立Cys 雷达": detect_unpaired_cysteine(clean_seq),
+            "同源 Germline": germline_val, "孤立Cys 雷达": detect_unpaired_cysteine(clean_seq),
             "CDR_GRAVY": calculate_gravy(comb_cdr), "pI (等电点)": calculate_pi(clean_seq),
             "PTM 风险预警": detect_ptms_detailed(clean_seq, cdrs, "VL"),
             "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": clean_seq
@@ -190,28 +202,17 @@ def process_single_seq(seq_name, clean_seq, use_api):
             "CDR1": "-", "CDR2": "-", "CDR3": "-", "完整序列": clean_seq
         })
     else:
-        vh_pattern = re.compile(r"([EQ].{100,135}VTVSS|[EQ].{100,135}VTVSA)")
-        vl_pattern = re.compile(r"([DEQA].{95,125}(?:VEIK|LEIK|LELK|TVLG|VTVL|FGC))")
-        for i, vh in enumerate(vh_pattern.findall(clean_seq)):
-            cdrs = extract_cdrs_via_api(vh, "VH") if use_api else extract_vh_cdrs_regex(vh)
-            comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
-            results.append({
-                "序列名称 (ID)": seq_name, "区域": f"VH_{i+1}", "类型": "重链/纳米抗体",
-                "同源 Germline": guess_germline(vh), "孤立Cys 雷达": detect_unpaired_cysteine(vh),
-                "CDR_GRAVY": calculate_gravy(comb_cdr), "pI (等电点)": calculate_pi(vh),
-                "PTM 风险预警": detect_ptms_detailed(vh, cdrs, "VH"),
-                "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": vh
-            })
-        for i, vl in enumerate(vl_pattern.findall(clean_seq)):
-            cdrs = extract_cdrs_via_api(vl, "VL") if use_api else extract_vl_cdrs_regex(vl)
-            comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
-            results.append({
-                "序列名称 (ID)": seq_name, "区域": f"VL_{i+1}", "类型": "轻链",
-                "同源 Germline": guess_germline(vl), "孤立Cys 雷达": detect_unpaired_cysteine(vl),
-                "CDR_GRAVY": calculate_gravy(comb_cdr), "pI (等电点)": calculate_pi(vl),
-                "PTM 风险预警": detect_ptms_detailed(vl, cdrs, "VL"),
-                "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": vl
-            })
+        # 兼容未带明确后缀的普通序列，默认判定为重链或轻链
+        cdrs = extract_cdrs_via_api(clean_seq, "VH") if use_api else extract_vh_cdrs_regex(clean_seq)
+        comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
+        germline_val = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(clean_seq)
+        results.append({
+            "序列名称 (ID)": seq_name, "区域": "VH_1", "类型": "重链/纳米抗体",
+            "同源 Germline": germline_val, "孤立Cys 雷达": detect_unpaired_cysteine(clean_seq),
+            "CDR_GRAVY": calculate_gravy(comb_cdr), "pI (等电点)": calculate_pi(clean_seq),
+            "PTM 风险预警": detect_ptms_detailed(clean_seq, cdrs, "VH"),
+            "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": clean_seq
+        })
     return results
 
 # ==========================================
@@ -306,18 +307,31 @@ if analyze_btn:
                     vl_pi = vl_rows.iloc[0]['pI (等电点)']
                     delta_pi = abs(vh_pi - vl_pi)
                     warning_flag = "🚨 高危: ΔpI > 2.0 (易发生配对错乱或聚集)" if delta_pi > 2.0 else "✅ 正常 (电荷对称)"
+                    
+                    # 聚合重链与轻链的 CDR PTM 风险
+                    vh_ptm = vh_rows.iloc[0]['PTM 风险预警']
+                    vl_ptm = vl_rows.iloc[0]['PTM 风险预警']
+                    combined_ptm = []
+                    if vh_ptm and vh_ptm != "✅ 无 CDR 高危 PTM":
+                        combined_ptm.append(f"VH: {vh_ptm}")
+                    if vl_ptm and vl_ptm != "✅ 无 CDR 高危 PTM":
+                        combined_ptm.append(f"VL: {vl_ptm}")
+                    ptm_summary = " | ".join(combined_ptm) if combined_ptm else "✅ 无 CDR 高危 PTM"
+
                     paired_data.append({
                         "核心分子名 (ID)": name, "重链 (VH) pI": vh_pi, "轻链 (VL) pI": vl_pi,
-                        "ΔpI (电荷不对称性)": round(delta_pi, 2), "Fv 链间质控状态": warning_flag
+                        "ΔpI (电荷不对称性)": round(delta_pi, 2), "Fv 链间质控状态": warning_flag,
+                        "Fv 区域 CDR-PTM 风险汇总": ptm_summary
                     })
             
             df_paired = pd.DataFrame(paired_data)
             if not df_paired.empty:
-                st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对电荷分析)")
-                st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态']), use_container_width=True)
+                st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对电荷与 PTM 汇总)")
+                st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态', 'Fv 区域 CDR-PTM 风险汇总']), use_container_width=True)
             
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
             df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)].copy()
+            cluster_cdr3 = pd.DataFrame()
             if not df_valid_cdr3.empty:
                 df_valid_cdr3['CDR3长度 (AA)'] = df_valid_cdr3['CDR3'].apply(len)
                 cluster_cdr3 = df_valid_cdr3.groupby(['类型', 'CDR3']).agg(
@@ -331,7 +345,7 @@ if analyze_btn:
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df.drop(columns=['归属分子名']).to_excel(writer, index=False, sheet_name='单链_解析总表')
-                if not df_paired.empty: df_paired.to_excel(writer, index=False, sheet_name='配对_电荷不对称性(Fv)')
+                if not df_paired.empty: df_paired.to_excel(writer, index=False, sheet_name='配对_电荷与PTM质控(Fv)')
                 if not cluster_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='CDR3_多样性统计')
             
             st.markdown("#### 📥 报告导出")
