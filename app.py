@@ -79,7 +79,7 @@ def get_region_finder(seq, cdrs, domain_type):
         if idx1 != -1 and i < idx1: return "FR1"
         if idx1 != -1 and i < idx1 + len(c1): return "CDR1"
         if idx1 != -1 and idx2 != -1 and i < idx2: return "FR2"
-        if idx2 != -1 and idx2 + len(c2): return "CDR2" # 修正逻辑
+        if idx2 != -1 and idx2 + len(c2): return "CDR2"
         if idx2 != -1 and idx3 != -1 and i < idx3: return "FR3"
         if idx3 != -1 and i < idx3 + len(c3): return "CDR3"
         if idx3 != -1 and i >= idx3 + len(c3): return "FR4"
@@ -297,9 +297,9 @@ if analyze_btn:
             st.markdown("#### 📊 CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
-            # 智能剥离后缀匹配归属分子名
+            # 智能剥离后缀匹配归属分子名 (使用标准的 flags=re.IGNORECASE 解决 Python 3.11+ 兼容性)
             def extract_base_name(name):
-                return re.sub(r'[-_](?i)(VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name).strip()
+                return re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name, flags=re.IGNORECASE).strip()
             df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
             
             # Fv 链间电荷不对称性 (ΔpI) 计算
