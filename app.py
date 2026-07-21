@@ -9,10 +9,10 @@ import time
 # ==========================================
 # 1. 网页全局设置
 # ==========================================
-st.set_page_config(page_title="抗体核心分析中台 V15.1", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="抗体核心分析中台 V16", page_icon="🧬", layout="wide")
 
-st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V15.1 稳定版)")
-st.info("💡 修复了高并发下的 API 断连熔断机制，重构了精准降级提取算法。新增 Fv 链间电荷不对称性 (ΔpI) 排雷模块。已集成最新优化的高鲁棒性正则提取引擎与 IMGT 数据库。")
+st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V16 进阶版)")
+st.info("💡 核心升级：新增 CDR3 核心指纹多样性分析与长度聚类引擎。完美兼容复杂鼠源抗体（Murine）及罕见框架突变的高鲁棒性解析。")
 
 # ==========================================
 # 2. 深度 CMC 评估与序列分析引擎
@@ -125,7 +125,7 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
         response = requests.post(api_url, json=payload, headers={"Content-Type": "application/json"}, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            # 【核心升级】：提取底层引擎基于 IMGT 数据库比对出的种属和基因型
+            # 提取底层引擎基于 IMGT 数据库比对出的种属和基因型
             species = str(data.get("species", "")).capitalize()
             v_gene = str(data.get("v_gene", ""))
             api_germline = f"{species} {v_gene}".strip() if (species or v_gene) else None
@@ -184,7 +184,6 @@ def extract_vl_cdrs_regex(vl_seq):
 def parse_fasta(text):
     sequences = {}
     if ">" not in text:
-        # 如果没有表头，自动分配一个随机的名字，但如果是多条序列黏在一起，最好提示用户加 FASTA 格式
         sequences["未命名待测序列_1"] = re.sub(r'\s+', '', text).upper()
         return sequences
     for part in text.split(">"):
@@ -203,10 +202,8 @@ def process_single_seq(seq_name, clean_seq, use_api):
     results = []
     
     for i, vh in enumerate(vh_pattern.findall(clean_seq)):
-        # 传入 "VH" 标识
         cdrs = extract_cdrs_via_api(vh, "VH") if use_api else extract_vh_cdrs_regex(vh)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
-        # 【新增逻辑】：如果 API 返回了 IMGT 数据库识别的种属，则优先使用，否则降级使用我们手写的超强正则
         final_germline = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(vh)
         
         results.append({
@@ -217,10 +214,8 @@ def process_single_seq(seq_name, clean_seq, use_api):
             "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": vh
         })
     for i, vl in enumerate(vl_pattern.findall(clean_seq)):
-        # 传入 "VL" 标识
         cdrs = extract_cdrs_via_api(vl, "VL") if use_api else extract_vl_cdrs_regex(vl)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
-        # 【新增逻辑】：轻链同样获取 IMGT 基因型
         final_germline = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(vl)
         
         results.append({
@@ -301,7 +296,6 @@ if analyze_btn:
         all_results = []
         progress_bar = st.progress(0)
         
-        # 【核心升级】：如果是 API 模式，限制并发为 3 保护对方服务器；如果是本地，放开并发限制。
         workers = 3 if use_api else 8
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_seq = {executor.submit(process_single_seq, name, seq, use_api): name for name, seq in seq_dict.items()}
@@ -313,7 +307,6 @@ if analyze_btn:
                     all_results.extend(res)
                 except Exception as e:
                     st.error(f"序列解析失败: {e}")
-                
                 completed += 1
                 progress_bar.progress(completed / total_seqs)
         
@@ -329,65 +322,83 @@ if analyze_btn:
                     return 'background-color: #fff2cc; color: #b26b00'
                 return ''
             
-            st.markdown("#### 📊 CMC 序列解析总表")
+            st.markdown("#### 📊 1. CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
+            # ==========================================
+            # 新增核心功能：CDR3 核心指纹与多样性聚类
+            # ==========================================
+            st.markdown("#### 🧬 2. CDR3 核心指纹与多样性聚类 (Unique Analysis)")
+            st.caption("抗原识别的核心在于 CDR3。本模块已对高置信度 CDR3 进行提纯去重，分析其出现频次与长度特征，帮助锁定核心克隆簇 (Clonal Families)。")
+            
+            df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
+            # 过滤掉未识别的无效数据，并创建副本以避免 SettingWithCopyWarning
+            df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)].copy()
+            
+            if not df_valid_cdr3.empty:
+                # 计算每个提取出的 CDR3 长度
+                df_valid_cdr3['CDR3长度 (AA)'] = df_valid_cdr3['CDR3'].apply(len)
+                
+                # 基于 CDR3 序列进行高阶聚类分析
+                cluster_cdr3 = df_valid_cdr3.groupby(['类型', 'CDR3']).agg(
+                    出现频次=('序列名称 (ID)', 'count'),
+                    CDR3长度=('CDR3长度 (AA)', 'first'),
+                    同源Germline=('同源 Germline', 'first'),
+                    来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x.unique())),
+                    代表完整序列=('完整序列', 'first')
+                ).reset_index().sort_values(by=['类型', '出现频次'], ascending=[True, False])
+                
+                # 在前端将重链和轻链分开展示，UI更清晰
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("##### 🔵 重链 CDR3 多样性")
+                    vh_cdr3 = cluster_cdr3[cluster_cdr3['类型'].str.contains('重')].drop(columns=['类型'])
+                    st.dataframe(vh_cdr3, use_container_width=True, hide_index=True)
+                with c2:
+                    st.markdown("##### 🟢 轻链 CDR3 多样性")
+                    vl_cdr3 = cluster_cdr3[cluster_cdr3['类型'].str.contains('轻')].drop(columns=['类型'])
+                    st.dataframe(vl_cdr3, use_container_width=True, hide_index=True)
+            else:
+                st.info("尚未在当前数据中提取到有效的 CDR3 指纹。")
+
+            # --- 全序列级别聚类 ---
+            cluster_v = df_v.groupby('完整序列').agg(
+                链类型=('类型', 'first'), 相同序列数=('序列名称 (ID)', 'count'),
+                来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x.unique())),
+                PTM风险=('PTM 风险预警', 'first'), CDR3=('CDR3', 'first')
+            ).reset_index().sort_values(by=['链类型', '相同序列数'], ascending=[True, False])
+
             # --- 分子水平 Fv 质控 (电荷不对称性计算) ---
             paired_data = []
             grouped = df.groupby('序列名称 (ID)')
             for name, group in grouped:
                 vh_rows = group[group['类型'].str.contains('重链')]
                 vl_rows = group[group['类型'].str.contains('轻链')]
-                
-                # 只有当该 ID 下同时存在 VH 和 VL 时，才会触发配对质控计算！
                 if not vh_rows.empty and not vl_rows.empty:
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
                     vl_pi = vl_rows.iloc[0]['pI (等电点)']
                     delta_pi = abs(vh_pi - vl_pi)
-                    
                     warning_flag = "🚨 高危: ΔpI > 2.0 (易发生配对错乱或自发聚集沉淀)" if delta_pi > 2.0 else "✅ 正常 (电荷分布对称)"
-                    
                     paired_data.append({
-                        "来源分子名称 (ID)": name,
-                        "重链 (VH) pI": vh_pi,
-                        "轻链 (VL) pI": vl_pi,
-                        "ΔpI (电荷不对称性)": round(delta_pi, 2),
-                        "Fv 链间质控状态": warning_flag
+                        "来源分子名称 (ID)": name, "重链 (VH) pI": vh_pi, "轻链 (VL) pI": vl_pi,
+                        "ΔpI (电荷不对称性)": round(delta_pi, 2), "Fv 链间质控状态": warning_flag
                     })
             
             df_paired = pd.DataFrame(paired_data)
-            
             if not df_paired.empty:
-                st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对电荷分析)")
-                st.caption("系统提取了具有配对关系的重轻链，计算等电点差异。如果此处未显示某些分子，请确保输入序列时带有统一的 `>分子名` FASTA 表头。")
+                st.markdown("#### ⚖️ 3. 分子水平 Fv 质控 (VH-VL 配对电荷分析)")
                 st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态']), use_container_width=True)
-            else:
-                st.info("💡 Fv 质控雷达待命：本次解析未检测到配对的重/轻链。如果您想计算 Fv 配对数据，请确保输入的重链和轻链属于同一个 `>序列名`。")
 
-            # --- 序列聚类统计 ---
-            df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
-            cluster_v = df_v.groupby('完整序列').agg(
-                链类型=('类型', 'first'), 相同序列数=('序列名称 (ID)', 'count'),
-                来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x.unique())),
-                PTM风险=('PTM 风险预警', 'first'), CDR3=('CDR3', 'first')
-            ).reset_index().sort_values(by=['链类型', '相同序列数'], ascending=[True, False])
-            
-            df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)]
-            cluster_cdr3 = df_valid_cdr3.groupby('CDR3').agg(
-                链类型=('类型', 'first'), 共享该CDR3数量=('序列名称 (ID)', 'count'),
-                来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x.unique())), 代表完整序列=('完整序列', 'first')
-            ).reset_index().sort_values(by=['链类型', '共享该CDR3数量'], ascending=[True, False])
-            
             # --- 导出模块 ---
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name='单链_解析总表')
+                if not df_valid_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='CDR3_核心指纹聚类')
                 if not df_paired.empty: df_paired.to_excel(writer, index=False, sheet_name='配对_电荷不对称性(Fv)')
                 if not cluster_v.empty: cluster_v.to_excel(writer, index=False, sheet_name='全序列聚类去重')
-                if not cluster_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='基于CDR3同源聚类')
             
-            st.markdown("#### 📥 报告导出")
-            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V15.1.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            st.markdown("#### 📥 4. 报告导出")
+            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V16.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         else:
             st.warning("⚠️ 未能在输入的文本中识别出标准抗体片段，请检查序列是否完整。")
     else:
