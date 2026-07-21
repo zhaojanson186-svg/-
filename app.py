@@ -98,11 +98,9 @@ def detect_ptms_detailed(seq, cdrs, domain_type):
 # 3. 提取引擎 (修复降级 Bug + 高级正则增强)
 # ==========================================
 def extract_cdrs_via_api(seq, chain_type="VH"):
-    """【核心修复】：传入 chain_type，确保 API 失败时精准降级，绝不混用正则"""
     api_url = "https://api.antibody-informatics.org/v1/anarci/annotate"
     payload = {"sequence": seq, "scheme": "imgt"}
     try:
-        # 添加微小延迟，防止并发过高被服务器掐断
         time.sleep(0.1)
         response = requests.post(api_url, json=payload, headers={"Content-Type": "application/json"}, timeout=5)
         if response.status_code == 200:
@@ -110,43 +108,34 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
             return { "CDR1": data.get("CDR1", "未识别"), "CDR2": data.get("CDR2", "未识别"), "CDR3": data.get("CDR3", "未识别") }
         else: raise Exception("API 异常")
     except Exception:
-        # 降级时不再猜首字母，直接根据传入的真实类型匹配
         if chain_type == "VH":
             return extract_vh_cdrs_regex(seq)
         else:
             return extract_vl_cdrs_regex(seq)
 
 def extract_vh_cdrs_regex(vh_seq):
-    """优化后的重链 CDR 正则提取引擎"""
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
     
-    # CDR3 提取 (兼容更多结尾变体)
     cdr3_match = re.search(r"Y[YFCAV][CST][A-Z]{1,3}(.*?)W[GS][A-Z][GTSVI]", vh_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
-    # CDR1 提取 (拓宽下游锚点，兼容 WVIQ 等罕见序列)
     cdr1_match = re.search(r"C[A-Z]{2,6}(.{5,16}?)W[VILFMA][A-Z]", vh_seq)
     if cdr1_match: cdrs["CDR1"] = cdr1_match.group(1)
     
-    # CDR2 提取 (兼容 LDWIA 等异常突变的 FR2 结尾)
     cdr2_match = re.search(r"(?:[ELKDR][A-Z]{0,1}W[IVLMST][A-Z]{1,2}|REG[VLIA][A-Z]|RWV[A-Z])(.{8,30}?)[RKQ][VFSILAM][TVILAMFSC][A-Z]?", vh_seq)
     if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
     
     return cdrs
 
 def extract_vl_cdrs_regex(vl_seq):
-    """优化后的轻链 CDR 正则提取引擎"""
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别"}
     
-    # CDR3 提取 (兼容突变的 YVC 锚点和 FGGGT 等非标准 FR4 结尾)
     cdr3_match = re.search(r"Y[YFCAVS][CST](.*?)(?:F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
-    # CDR1 提取
     cdr1_match = re.search(r"C(.{8,18}?)W[YFL]", vl_seq)
     if cdr1_match: cdrs["CDR1"] = cdr1_match.group(1)
     
-    # CDR2 提取
     cdr2_match = re.search(r"[ILVM][A-Z]([A-Z]{7})G[A-Z]P", vl_seq)
     if not cdr2_match: cdr2_match = re.search(r"W[YFL].{10,22}?([A-Z]{7})G[A-Z]{1,2}[RFS]", vl_seq)
     if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
@@ -156,7 +145,6 @@ def extract_vl_cdrs_regex(vl_seq):
 def parse_fasta(text):
     sequences = {}
     if ">" not in text:
-        # 如果没有表头，自动分配一个随机的名字，但如果是多条序列黏在一起，最好提示用户加 FASTA 格式
         sequences["未命名待测序列_1"] = re.sub(r'\s+', '', text).upper()
         return sequences
     for part in text.split(">"):
@@ -174,7 +162,6 @@ def process_single_seq(seq_name, clean_seq, use_api):
     results = []
     
     for i, vh in enumerate(vh_pattern.findall(clean_seq)):
-        # 传入 "VH" 标识
         cdrs = extract_cdrs_via_api(vh, "VH") if use_api else extract_vh_cdrs_regex(vh)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
         results.append({
@@ -185,7 +172,6 @@ def process_single_seq(seq_name, clean_seq, use_api):
             "CDR1": cdrs["CDR1"], "CDR2": cdrs["CDR2"], "CDR3": cdrs["CDR3"], "完整序列": vh
         })
     for i, vl in enumerate(vl_pattern.findall(clean_seq)):
-        # 传入 "VL" 标识
         cdrs = extract_cdrs_via_api(vl, "VL") if use_api else extract_vl_cdrs_regex(vl)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
         results.append({
@@ -246,7 +232,7 @@ st.markdown("### 🔬 模块二：多线程序列解析与 CMC 排雷引擎")
 
 col1, col2 = st.columns([3, 1])
 with col1:
-    raw_input = st.text_area("📥 请在此粘贴需要评估的候选序列 (最好使用带 > 的 FASTA 格式，以便识别配稳关系):", height=250, key="main_input")
+    raw_input = st.text_area("📥 请在此粘贴需要评估的候选序列 (最好使用带 > 的 FASTA 格式，以便识别配对关系):", height=250, key="main_input")
 with col2:
     st.markdown("##### ⚙️ 引擎设置")
     engine_choice = st.radio("选择底层提取引擎：", 
@@ -266,7 +252,6 @@ if analyze_btn:
         all_results = []
         progress_bar = st.progress(0)
         
-        # 【核心升级】：如果是 API 模式，限制并发为 3 保护对方服务器；如果是本地，放开并发限制。
         workers = 3 if use_api else 8
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_seq = {executor.submit(process_single_seq, name, seq, use_api): name for name, seq in seq_dict.items()}
@@ -285,7 +270,6 @@ if analyze_btn:
         if all_results:
             df = pd.DataFrame(all_results)
             
-            # --- 数据高亮与美化 ---
             def highlight_alerts(val):
                 val_str = str(val)
                 if '🚨' in val_str or '高危' in val_str or '脱氨基' in val_str or '异构化' in val_str:
@@ -297,14 +281,12 @@ if analyze_btn:
             st.markdown("#### 📊 CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
-            # --- 分子水平 Fv 质控 (电荷不对称性计算) ---
             paired_data = []
             grouped = df.groupby('序列名称 (ID)')
             for name, group in grouped:
                 vh_rows = group[group['类型'].str.contains('重链')]
                 vl_rows = group[group['类型'].str.contains('轻链')]
                 
-                # 只有当该 ID 下同时存在 VH 和 VL 时，才会触发配对质控计算！
                 if not vh_rows.empty and not vl_rows.empty:
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
                     vl_pi = vl_rows.iloc[0]['pI (等电点)']
@@ -329,7 +311,6 @@ if analyze_btn:
             else:
                 st.info("💡 Fv 质控雷达待命：本次解析未检测到配对的重/轻链。如果您想计算 Fv 配对数据，请确保输入的重链和轻链属于同一个 `>序列名`。")
 
-            # --- 序列聚类统计 ---
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
             cluster_v = df_v.groupby('完整序列').agg(
                 链类型=('类型', 'first'), 相同序列数=('序列名称 (ID)', 'count'),
@@ -343,7 +324,6 @@ if analyze_btn:
                 来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x.unique())), 代表完整序列=('完整序列', 'first')
             ).reset_index().sort_values(by=['链类型', '共享该CDR3数量'], ascending=[True, False])
             
-            # --- 导出模块 ---
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name='单链_解析总表')
@@ -357,8 +337,3 @@ if analyze_btn:
             st.warning("⚠️ 未能在输入的文本中识别出标准抗体片段，请检查序列是否完整。")
     else:
         st.error("请先输入序列文本！")
-```eof
-
-现在，您的 V15.1 系统既拥有了强大的**并发处理性能和 Fv 数据质控**，又兼备了此前优化后的**能够应付罕见序列变异的正则提取引擎**！
-
-您还有其他的想要在这个中台中增加的功能吗？例如想要把 FTO 专利排雷模块再整合进来，或者想要在 Fv 质控中加入计算重轻链的疏水性差异（ΔGRAVY）吗？请随时告诉我。
