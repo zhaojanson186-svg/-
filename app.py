@@ -9,10 +9,10 @@ import time
 # ==========================================
 # 1. 网页全局设置
 # ==========================================
-st.set_page_config(page_title="抗体核心分析中台 V15.2", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="抗体核心分析中台 V16", page_icon="🧬", layout="wide")
 
-st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V15.2 精准 CDR PTM 过滤版)")
-st.info("💡 核心升级：已优化 PTM 分析引擎，实现**仅对发生在高变异区（CDR1/CDR2/CDR3）的高危 PTM 风险进行精准靶向预警**，滤除框架区（FR）干扰。")
+st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V16)")
+st.info("💡 更新日志：PTM 引擎已聚焦工业级 Showstopper（仅对 CDR 区的 N-糖基化、NG、DG、DP 等致命缺陷报警）；重构了同名序列防覆盖解析系统。")
 
 # ==========================================
 # 2. 深度 CMC 评估与序列分析引擎
@@ -87,10 +87,19 @@ def get_region_finder(seq, cdrs, domain_type):
     return region_of
 
 def detect_ptms_detailed(seq, cdrs, domain_type):
-    """【严格优化】：只保留并提示发生在 CDR 区域（CDR1、CDR2、CDR3）上的高危 PTM 风险"""
+    """【PTM 核心瘦身】：只提示发生在 CDR 上的，且具有致命成药性缺陷的位点"""
     if "Fc" in domain_type: return "✅ 无 CDR PTM (Fc区)"
+    
     region_finder = get_region_finder(seq, cdrs, domain_type)
-    ptm_rules = {"N-糖基化": r"N[^P][ST]", "脱氨基": r"N[GSN]", "异构化": r"D[GS]", "酸断裂": r"DP", "氧化": r"M"}
+    
+    # 极简致命规则：去除了一般的 M 氧化和慢速脱氨/异构化，只抓大雷
+    ptm_rules = {
+        "N-糖基化": r"N[^P][ST]", 
+        "极速脱氨基(NG)": r"NG", 
+        "极速异构化(DG)": r"DG", 
+        "酸断裂点(DP)": r"DP"
+    }
+    
     found_ptms = []
     for ptm_name, pattern in ptm_rules.items():
         for match in re.finditer(pattern, seq):
@@ -98,8 +107,9 @@ def detect_ptms_detailed(seq, cdrs, domain_type):
             # 严格过滤：只收录位于 CDR 区域内的修饰
             if region_name.startswith("CDR"):
                 found_ptms.append(f"[{region_name}] {ptm_name}({match.group()}) @{match.start()+1}")
+                
     found_ptms.sort(key=lambda x: int(re.search(r'@(\d+)', x).group(1)) if re.search(r'@(\d+)', x) else 0)
-    return " | ".join(found_ptms) if found_ptms else "✅ 无 CDR 高危 PTM"
+    return " | ".join(found_ptms) if found_ptms else "✅ 无高危 PTM"
 
 # ==========================================
 # 3. 提取引擎 (Cys 锚定精准切片)
@@ -127,7 +137,6 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
 def extract_vh_cdrs_regex(vh_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
     
-    # 严格 Cys 锚定的 CDR3 提取
     cdr3_match = re.search(r"C([A-Z]{3,25})(?=W[GS][A-Z][GTSVI]|WG[QA]G|W[GS]G)", vh_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
@@ -141,7 +150,6 @@ def extract_vh_cdrs_regex(vh_seq):
 def extract_vl_cdrs_regex(vl_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
     
-    # 严格 Cys 锚定的轻链 CDR3 提取
     cdr3_match = re.search(r"C([A-Z]{3,20})(?=F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
@@ -166,10 +174,8 @@ def parse_fasta(text):
         raw_name = lines[0].strip()
         seq = "".join(lines[1:]).replace(" ", "").upper()
         if raw_name and seq:
-            # 【核心修复】：解决 FASTA 中存在同名序列导致字典覆盖漏掉序列的问题
             if raw_name in name_counter:
                 name_counter[raw_name] += 1
-                # 智能插入后缀，例如将 _VH 变成 _Dup2_VH，确保后续 Fv 配对引擎正常工作
                 match = re.search(r'([-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light))$', raw_name, flags=re.IGNORECASE)
                 if match:
                     suffix = match.group(1)
@@ -221,7 +227,6 @@ def process_single_seq(seq_name, clean_seq, use_api):
             "CDR1": "-", "CDR2": "-", "CDR3": "-", "完整序列": clean_seq
         })
     else:
-        # 兼容未带明确后缀的普通序列，默认判定为重链或轻链
         cdrs = extract_cdrs_via_api(clean_seq, "VH") if use_api else extract_vh_cdrs_regex(clean_seq)
         comb_cdr = (cdrs["CDR1"] + cdrs["CDR2"] + cdrs["CDR3"]).replace("未识别", "")
         germline_val = cdrs.get("API_Germline") if cdrs.get("API_Germline") else guess_germline(clean_seq)
@@ -304,9 +309,10 @@ if analyze_btn:
             
             def highlight_alerts(val):
                 val_str = str(val)
-                if '🚨' in val_str or '高危' in val_str or '脱氨基' in val_str or '异构化' in val_str:
+                # 重新校准了报警的高亮逻辑，只对真正的红牌位点高亮
+                if '🚨' in val_str or '糖基化' in val_str or 'NG' in val_str or 'DG' in val_str or 'DP' in val_str:
                     return 'background-color: #ffcccc; color: #990000; font-weight: bold'
-                elif '⚠️' in val_str or '氧化' in val_str:
+                elif '⚠️' in val_str:
                     return 'background-color: #fff2cc; color: #b26b00'
                 return ''
             
@@ -325,17 +331,18 @@ if analyze_btn:
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
                     vl_pi = vl_rows.iloc[0]['pI (等电点)']
                     delta_pi = abs(vh_pi - vl_pi)
-                    warning_flag = "🚨 高危: ΔpI > 2.0 (易发生配对错乱或聚集)" if delta_pi > 2.0 else "✅ 正常 (电荷对称)"
                     
-                    # 聚合重链与轻链的 CDR PTM 风险
+                    # 取消了强烈的红色报警，降级为普通的观测指标，防止干扰早期判断
+                    warning_flag = "⚠️ 关注: ΔpI > 2.0" if delta_pi > 2.0 else "✅ 正常 (电荷分布对称)"
+                    
                     vh_ptm = vh_rows.iloc[0]['PTM 风险预警']
                     vl_ptm = vl_rows.iloc[0]['PTM 风险预警']
                     combined_ptm = []
-                    if vh_ptm and vh_ptm != "✅ 无 CDR 高危 PTM":
+                    if vh_ptm and "✅" not in vh_ptm:
                         combined_ptm.append(f"VH: {vh_ptm}")
-                    if vl_ptm and vl_ptm != "✅ 无 CDR 高危 PTM":
+                    if vl_ptm and "✅" not in vl_ptm:
                         combined_ptm.append(f"VL: {vl_ptm}")
-                    ptm_summary = " | ".join(combined_ptm) if combined_ptm else "✅ 无 CDR 高危 PTM"
+                    ptm_summary = " | ".join(combined_ptm) if combined_ptm else "✅ Fv 无高危 PTM"
 
                     paired_data.append({
                         "核心分子名 (ID)": name, "重链 (VH) pI": vh_pi, "轻链 (VL) pI": vl_pi,
@@ -345,8 +352,8 @@ if analyze_btn:
             
             df_paired = pd.DataFrame(paired_data)
             if not df_paired.empty:
-                st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对电荷与 PTM 汇总)")
-                st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 链间质控状态', 'Fv 区域 CDR-PTM 风险汇总']), use_container_width=True)
+                st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对数据汇总)")
+                st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 区域 CDR-PTM 风险汇总']), use_container_width=True)
             
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
             df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)].copy()
@@ -364,11 +371,11 @@ if analyze_btn:
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df.drop(columns=['归属分子名']).to_excel(writer, index=False, sheet_name='单链_解析总表')
-                if not df_paired.empty: df_paired.to_excel(writer, index=False, sheet_name='配对_电荷与PTM质控(Fv)')
+                if not df_paired.empty: df_paired.to_excel(writer, index=False, sheet_name='配对_Fv双链汇总')
                 if not cluster_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='CDR3_多样性统计')
             
             st.markdown("#### 📥 报告导出")
-            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V15.2.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V16.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         else:
             st.warning("⚠️ 未能识别出有效片段。")
     else:
