@@ -375,11 +375,13 @@ if analyze_btn:
                     lambda x: "✅ 唯一 (Unique)" if x == 1 else f"⚠️ 冗余克隆 (Dup x{x})"
                 )
                 
-                # 重新整理列名供前端显示，抛弃用于计算的序列实体，保持报表清爽
-                df_paired_final = fv_cluster[[
-                    '唯一性 (Unique)', '代表分子名', '合并来源分子名', 
+                # 重新整理列名供前端显示，先排序再切片，避免 KeyError
+                df_paired_final = fv_cluster.sort_values(
+                    by=['包含相同配稳数', '代表分子名'], ascending=[False, True]
+                )[[
+                    '唯一性 (Unique)', '包含相同配对数', '代表分子名', '合并来源分子名', 
                     '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
-                ]].sort_values(by=['包含相同配对数', '代表分子名'], ascending=[False, True])
+                ]]
                 
                 # 更新到 df_paired 供后续导出下载使用
                 df_paired = df_paired_final
