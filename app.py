@@ -323,16 +323,17 @@ if analyze_btn:
                 return re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name, flags=re.IGNORECASE).strip()
             df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
             
-            paired_data = []
+<comment-tag id="1" text="通过提取 VH 和 VL 的完整氨基酸序列并将其拼接为组合指纹（Fv_Fingerprint），系统可以在全局范围内寻找完全一致的双链组合。如果有相同的组合，它会将被判定为冗余克隆（Duplicate）并在表格最前方发出黄底警告，还能追溯所有来源同名的分子 ID。" type="suggestion">            paired_data = []
             for name, group in df.groupby('归属分子名'):
                 vh_rows = group[group['类型'].str.contains('重链')]
                 vl_rows = group[group['类型'].str.contains('轻链')]
                 if not vh_rows.empty and not vl_rows.empty:
+                    vh_seq = vh_rows.iloc[0]['完整序列']
+                    vl_seq = vl_rows.iloc[0]['完整序列']
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
-                    vl_pi = vl_rows.iloc[0]['pI (等电点)']
+                    vl_pi = vh_rows.iloc[0]['pI (等电点)']
                     delta_pi = abs(vh_pi - vl_pi)
                     
-                    # 取消了强烈的红色报警，降级为普通的观测指标，防止干扰早期判断
                     warning_flag = "⚠️ 关注: ΔpI > 2.0" if delta_pi > 2.0 else "✅ 正常 (电荷分布对称)"
                     
                     vh_ptm = vh_rows.iloc[0]['PTM 风险预警']
@@ -345,15 +346,45 @@ if analyze_btn:
                     ptm_summary = " | ".join(combined_ptm) if combined_ptm else "✅ Fv 无高危 PTM"
 
                     paired_data.append({
-                        "核心分子名 (ID)": name, "重链 (VH) pI": vh_pi, "轻链 (VL) pI": vl_pi,
-                        "ΔpI (电荷不对称性)": round(delta_pi, 2), "Fv 链间质控状态": warning_flag,
-                        "Fv 区域 CDR-PTM 风险汇总": ptm_summary
+                        "核心分子名 (ID)": name, 
+                        "VH_Seq": vh_seq, "VL_Seq": vl_seq,
+                        "重链_pI": vh_pi, "轻链_pI": vl_pi,
+                        "ΔpI": round(delta_pi, 2), "Fv质控状态": warning_flag,
+                        "PTM风险汇总": ptm_summary
                     })
             
             df_paired = pd.DataFrame(paired_data)
             if not df_paired.empty:
-                st.markdown("#### ⚖️ 分子水平 Fv 质控 (VH-VL 配对数据汇总)")
-                st.dataframe(df_paired.style.map(highlight_alerts, subset=['Fv 区域 CDR-PTM 风险汇总']), use_container_width=True)
+                # 核心升级：生成 VH + VL 的双链联合指纹，进行全局去重与 Unique 判定
+                df_paired['Fv_Fingerprint'] = df_paired['VH_Seq'] + "||" + df_paired['VL_Seq']
+                
+                fv_cluster = df_paired.groupby('Fv_Fingerprint').agg(
+                    包含相同配对数=('核心分子名 (ID)', 'count'),
+                    代表分子名=('核心分子名 (ID)', 'first'),
+                    合并来源分子名=('核心分子名 (ID)', lambda x: ', '.join(x.unique())),
+                    重链_pI=('重链_pI', 'first'),
+                    轻链_pI=('轻链_pI', 'first'),
+                    ΔpI=('ΔpI', 'first'),
+                    Fv质控状态=('Fv质控状态', 'first'),
+                    PTM风险汇总=('PTM风险汇总', 'first')
+                ).reset_index()
+                
+                # 基于频次打标签
+                fv_cluster['唯一性 (Unique)'] = fv_cluster['包含相同配对数'].apply(
+                    lambda x: "✅ 唯一 (Unique)" if x == 1 else f"⚠️ 冗余克隆 (Dup x{x})"
+                )
+                
+                # 重新整理列名供前端显示，抛弃用于计算的序列实体，保持报表清爽
+                df_paired_final = fv_cluster[[
+                    '唯一性 (Unique)', '代表分子名', '合并来源分子名', 
+                    '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
+                ]].sort_values(by=['包含相同配对数', '代表分子名'], ascending=[False, True])
+                
+                # 更新到 df_paired 供后续导出下载使用
+                df_paired = df_paired_final
+                
+                st.markdown("#### ⚖️ 分子水平 Fv 质控与配对唯一性 (Unique Fv)")
+                st.dataframe(df_paired_final.style.map(highlight_alerts, subset=['Fv质控状态', 'PTM风险汇总', '唯一性 (Unique)']), use_container_width=True)</comment-tag>
             
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
             df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)].copy()
