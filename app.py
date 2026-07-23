@@ -12,7 +12,7 @@ import time
 st.set_page_config(page_title="抗体核心分析中台 V16", page_icon="🧬", layout="wide")
 
 st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V16)")
-st.info("💡 更新日志：PTM 引擎已聚焦工业级 Showstopper（仅对 CDR 区的 N-糖基化、NG、DG、DP 等致命缺陷报警）；重构了同名序列防覆盖解析系统。")
+st.info("💡 更新日志：PTM 引擎已聚焦工业级致命缺陷；重构了同名序列防覆盖解析系统；新增 Fv 组合唯一性 (Unique Clone) 聚类排重功能。")
 
 # ==========================================
 # 2. 深度 CMC 评估与序列分析引擎
@@ -309,7 +309,6 @@ if analyze_btn:
             
             def highlight_alerts(val):
                 val_str = str(val)
-                # 重新校准了报警的高亮逻辑，只对真正的红牌位点高亮
                 if '🚨' in val_str or '糖基化' in val_str or 'NG' in val_str or 'DG' in val_str or 'DP' in val_str:
                     return 'background-color: #ffcccc; color: #990000; font-weight: bold'
                 elif '⚠️' in val_str:
@@ -319,19 +318,21 @@ if analyze_btn:
             st.markdown("#### 📊 CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
+            # Base name extraction strictly handling regex flags externally
             def extract_base_name(name):
                 return re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name, flags=re.IGNORECASE).strip()
             df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
             
-<comment-tag id="1" text="通过提取 VH 和 VL 的完整氨基酸序列并将其拼接为组合指纹（Fv_Fingerprint），系统可以在全局范围内寻找完全一致的双链组合。如果有相同的组合，它会将被判定为冗余克隆（Duplicate）并在表格最前方发出黄底警告，还能追溯所有来源同名的分子 ID。" type="suggestion">            paired_data = []
+            paired_data = []
             for name, group in df.groupby('归属分子名'):
                 vh_rows = group[group['类型'].str.contains('重链')]
                 vl_rows = group[group['类型'].str.contains('轻链')]
+                
                 if not vh_rows.empty and not vl_rows.empty:
                     vh_seq = vh_rows.iloc[0]['完整序列']
                     vl_seq = vl_rows.iloc[0]['完整序列']
                     vh_pi = vh_rows.iloc[0]['pI (等电点)']
-                    vl_pi = vh_rows.iloc[0]['pI (等电点)']
+                    vl_pi = vl_rows.iloc[0]['pI (等电点)']
                     delta_pi = abs(vh_pi - vl_pi)
                     
                     warning_flag = "⚠️ 关注: ΔpI > 2.0" if delta_pi > 2.0 else "✅ 正常 (电荷分布对称)"
@@ -384,7 +385,7 @@ if analyze_btn:
                 df_paired = df_paired_final
                 
                 st.markdown("#### ⚖️ 分子水平 Fv 质控与配对唯一性 (Unique Fv)")
-                st.dataframe(df_paired_final.style.map(highlight_alerts, subset=['Fv质控状态', 'PTM风险汇总', '唯一性 (Unique)']), use_container_width=True)</comment-tag>
+                st.dataframe(df_paired_final.style.map(highlight_alerts, subset=['Fv质控状态', 'PTM风险汇总', '唯一性 (Unique)']), use_container_width=True)
             
             df_v = df[df['类型'].isin(['重链/纳米抗体', '轻链'])]
             df_valid_cdr3 = df_v[~df_v['CDR3'].str.contains('未识别|失败', na=False)].copy()
