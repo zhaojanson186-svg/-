@@ -11,7 +11,7 @@ import time
 # ==========================================
 st.set_page_config(page_title="抗体核心分析中台 V16", page_icon="🧬", layout="wide")
 
-st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V16)")
+st.title("🧬 高通量抗体序列处理与 CMC 质控中台 (V16 最终版)")
 st.info("💡 更新日志：PTM 引擎已聚焦工业级致命缺陷；重构了同名序列防覆盖解析系统；新增 Fv 组合唯一性 (Unique Clone) 聚类排重功能。")
 
 # ==========================================
@@ -136,8 +136,8 @@ def extract_cdrs_via_api(seq, chain_type="VH"):
 
 def extract_vh_cdrs_regex(vh_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
-    
-    cdr3_match = re.search(r"C([A-Z]{3,25})(?=W[GS][A-Z][GTSVI]|WG[QA]G|W[GS]G)", vh_seq)
+    # Cys 锚定防吞噬，限定 4-30 氨基酸长度
+    cdr3_match = re.search(r"C([A-Z]{4,30})(?=W[GS][A-Z][GTSVI]|WG[QA]G|W[GS]G)", vh_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
     cdr1_match = re.search(r"C[A-Z]{2,6}(.{5,16}?)W[VILFMA][A-Z]", vh_seq)
@@ -149,8 +149,8 @@ def extract_vh_cdrs_regex(vh_seq):
 
 def extract_vl_cdrs_regex(vl_seq):
     cdrs = {"CDR1": "未识别", "CDR2": "未识别", "CDR3": "未识别", "API_Germline": None}
-    
-    cdr3_match = re.search(r"C([A-Z]{3,20})(?=F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
+    # Cys 锚定防吞噬，限定 4-25 氨基酸长度
+    cdr3_match = re.search(r"C([A-Z]{4,25})(?=F[GSA][A-Z]G|F[GSA][A-Z][GTV]|FGC)", vl_seq)
     if cdr3_match: cdrs["CDR3"] = cdr3_match.group(1)
     
     cdr1_match = re.search(r"C(.{8,18}?)W[YFL]", vl_seq)
@@ -176,6 +176,7 @@ def parse_fasta(text):
         if raw_name and seq:
             if raw_name in name_counter:
                 name_counter[raw_name] += 1
+                # 如果名称带有 _VH/_VL 等后缀，确保在重命名时后缀依然在最后，方便后续配对
                 match = re.search(r'([-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light))$', raw_name, flags=re.IGNORECASE)
                 if match:
                     suffix = match.group(1)
@@ -309,8 +310,10 @@ if analyze_btn:
             
             def highlight_alerts(val):
                 val_str = str(val)
-                if '🚨' in val_str or '糖基化' in val_str or 'NG' in val_str or 'DG' in val_str or 'DP' in val_str:
+                # 针对极其致命缺陷高红警告
+                if '🚨' in val_str or '糖基化' in val_str or 'NG' in val_str or 'DG' in val_str or 'DP' in val_str or '冗余' in val_str:
                     return 'background-color: #ffcccc; color: #990000; font-weight: bold'
+                # 针对较弱的缺陷给予黄底警告
                 elif '⚠️' in val_str:
                     return 'background-color: #fff2cc; color: #b26b00'
                 return ''
@@ -318,9 +321,10 @@ if analyze_btn:
             st.markdown("#### 📊 CMC 序列解析总表")
             st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
             
-            # Base name extraction strictly handling regex flags externally
+            # 使用标准的 flags 参数，避免正则表达式模式错误
             def extract_base_name(name):
                 return re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)$', '', name, flags=re.IGNORECASE).strip()
+            
             df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
             
             paired_data = []
@@ -372,12 +376,12 @@ if analyze_btn:
                 
                 # 基于频次打标签
                 fv_cluster['唯一性 (Unique)'] = fv_cluster['包含相同配对数'].apply(
-                    lambda x: "✅ 唯一 (Unique)" if x == 1 else f"⚠️ 冗余克隆 (Dup x{x})"
+                    lambda x: "✅ 唯一 (Unique)" if x == 1 else f"🚨 冗余克隆 (Dup x{x})"
                 )
                 
                 # 重新整理列名供前端显示，先排序再切片，避免 KeyError
                 df_paired_final = fv_cluster.sort_values(
-                    by=['包含相同配稳数', '代表分子名'], ascending=[False, True]
+                    by=['包含相同配对数', '代表分子名'], ascending=[False, True]
                 )[[
                     '唯一性 (Unique)', '包含相同配对数', '代表分子名', '合并来源分子名', 
                     '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
@@ -409,7 +413,7 @@ if analyze_btn:
                 if not cluster_cdr3.empty: cluster_cdr3.to_excel(writer, index=False, sheet_name='CDR3_多样性统计')
             
             st.markdown("#### 📥 报告导出")
-            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V16.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+            st.download_button("一键下载综合分析与聚类报告 (.xlsx)", data=buffer.getvalue(), file_name="Antibody_Sequence_Analysis_Report_V16_Final.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         else:
             st.warning("⚠️ 未能识别出有效片段。")
     else:
