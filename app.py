@@ -2,356 +2,236 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-from collections import Counter
-import base64
+from collections import defaultdict
 
-def calculate_mw(seq):
-    mw_table = {'A': 71.04, 'C': 103.01, 'D': 115.03, 'E': 129.04, 'F': 147.07,
-                'G': 57.02, 'H': 137.06, 'I': 113.08, 'K': 128.09, 'L': 113.08,
-                'M': 131.04, 'N': 114.04, 'P': 97.05, 'Q': 128.06, 'R': 156.10,
-                'S': 87.03, 'T': 101.05, 'V': 99.07, 'W': 186.08, 'Y': 163.06}
-    weight = sum(mw_table.get(aa, 0) for aa in seq) + 18.02
-    return round(weight, 2)
+PI_DICT = {'D': 2.77, 'E': 3.22, 'C': 8.18, 'Y': 10.46, 'H': 6.00, 'K': 10.53, 'R': 12.48}
+GRAVY_DICT = {
+    'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5, 'E': -3.5, 'G': -0.4,
+    'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8,
+    'T': -0.7, 'W': -0.9, 'Y': -1.3, 'V': 4.2
+}
 
-def calculate_pi(seq):
-    pk_a = {'D': 3.65, 'E': 4.25, 'Y': 10.07, 'C': 8.18, 'H': 6.00, 'K': 10.53, 'R': 12.48}
-    def net_charge(ph):
-        charge = 0.0
-        for aa, count in Counter(seq).items():
-            if aa in ['D', 'E', 'Y', 'C']:
-                charge -= count / (1.0 + 10**(pk_a[aa] - ph))
-            elif aa in ['H', 'K', 'R']:
-                charge += count / (1.0 + 10**(ph - pk_a[aa]))
-        charge -= 1.0 / (1.0 + 10**(3.1 - ph)) # C-term
-        charge += 1.0 / (1.0 + 10**(ph - 8.0)) # N-term
-        return charge
-    low, high = 0.0, 14.0
-    for _ in range(100):
-        mid = (low + high) / 2
-        if net_charge(mid) > 0: low = mid
-        else: high = mid
-    return round(mid, 2)
+def calculate_pi(sequence):
+    if not sequence: return None
+    charge = 0.0
+    for aa in sequence:
+        if aa in PI_DICT:
+            if aa in ['K', 'R', 'H']: charge += 1
+            elif aa in ['D', 'E', 'C', 'Y']: charge -= 1
+    return round(7.0 + (charge * 0.1), 2) 
 
-def calculate_gravy(seq):
-    kd = {'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5, 'E': -3.5, 
-          'G': -0.4, 'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 
-          'P': -1.6, 'S': -0.8, 'T': -0.7, 'W': -0.9, 'Y': -1.3, 'V': 4.2}
-    if not seq: return 0.0
-    return round(sum(kd.get(aa, 0) for aa in seq) / len(seq), 3)
+def calculate_gravy(sequence):
+    if not sequence: return None
+    total = sum(GRAVY_DICT.get(aa, 0) for aa in sequence)
+    return round(total / len(sequence), 2)
 
-def extract_vh_cdrs_regex(seq):
-    cdrs = {"CDR1": "", "CDR2": "", "CDR3": ""}
-    regions = {"FR1": "", "CDR1": "", "FR2": "", "CDR2": "", "FR3": "", "CDR3": "", "FR4": ""}
-    
-    cdr1_match = re.search(r"(S[VLA]K[LVI]S|S[A-Z]TL[ST]|S[A-Z][A-Z]MS|S[A-Z]QM[SN])C(.*?)W[VIQ]R[QA]", seq)
-    if cdr1_match: cdrs["CDR1"] = cdr1_match.group(2)
-    
-    cdr2_match = re.search(r"W[VIQ]R[QA][A-Z]{1,3}G[A-Z]{1,2}[EAW](.*?)[RKV][LTIV][TS][IVTL]", seq)
-    if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
-    
-    # 采用 Cys 锚定法，精准定位重链 CDR3，避免吞噬 FR3
-    cdr3_match = re.search(r"([YF][YFCAV][CAV])(.{5,30}?)(W[GS][A-Z][GTSVI])", seq)
-    if cdr3_match: 
-        cdrs["CDR3"] = cdr3_match.group(2)
-        c3_start = cdr3_match.start(2)
-        c3_end = cdr3_match.end(2)
-        regions["FR3"] = seq[:c3_start]
-        regions["CDR3"] = cdrs["CDR3"]
-        regions["FR4"] = seq[c3_end:]
-        if cdr1_match and cdr2_match:
-            c1_start, c1_end = cdr1_match.span(2)
-            c2_start, c2_end = cdr2_match.span(1)
-            regions["FR1"] = seq[:c1_start]
-            regions["CDR1"] = cdrs["CDR1"]
-            regions["FR2"] = seq[c1_end:c2_start]
-            regions["CDR2"] = cdrs["CDR2"]
-            regions["FR3"] = seq[c2_end:c3_start]
-    
-    return cdrs, regions
+def extract_base_name(name):
+    # 标准 flags=re.IGNORECASE，且 \d*$ 兼容 VH1, VL2 等带数字的后缀
+    base = re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)\d*$', '', name, flags=re.IGNORECASE).strip()
+    return base
 
-def extract_vl_cdrs_regex(seq):
-    cdrs = {"CDR1": "", "CDR2": "", "CDR3": ""}
-    regions = {"FR1": "", "CDR1": "", "FR2": "", "CDR2": "", "FR3": "", "CDR3": "", "FR4": ""}
-    
-    cdr1_match = re.search(r"[STD][VIAL][TISM][CS](.*?)W[YF]Q[QR]", seq)
-    if cdr1_match: cdrs["CDR1"] = cdr1_match.group(1)
-    
-    cdr2_match = re.search(r"P[RKAL]L[LIVW]I[YF](.*?)[GSA]VP[DSR]", seq)
-    if cdr2_match: cdrs["CDR2"] = cdr2_match.group(1)
-    
-    # 采用 Cys 锚定法，精准定位轻链 CDR3，避免吞噬 FR3
-    cdr3_match = re.search(r"([YF][YFCAVS][CST])(.{4,20}?)(F[GSA][A-Z]G)", seq)
-    if cdr3_match: 
-        cdrs["CDR3"] = cdr3_match.group(2)
-        c3_start = cdr3_match.start(2)
-        c3_end = cdr3_match.end(2)
-        regions["FR3"] = seq[:c3_start]
-        regions["CDR3"] = cdrs["CDR3"]
-        regions["FR4"] = seq[c3_end:]
-        if cdr1_match and cdr2_match:
-            c1_start, c1_end = cdr1_match.span(1)
-            c2_start, c2_end = cdr2_match.span(1)
-            regions["FR1"] = seq[:c1_start]
-            regions["CDR1"] = cdrs["CDR1"]
-            regions["FR2"] = seq[c1_end:c2_start]
-            regions["CDR2"] = cdrs["CDR2"]
-            regions["FR3"] = seq[c2_end:c3_start]
-            
-    return cdrs, regions
-
-def detect_ptms_detailed(regions_dict):
-    # 精简 PTM 预警：只抓取真正的 4 种致命缺陷，忽略 M 氧化等次要干扰
-    ptm_motifs = {
-        "N-糖基化 (NIT)": r"N[^P][ST]",
-        "极速脱氨基 (NG)": r"NG",
-        "极速异构化 (DG)": r"DG",
-        "酸断裂点 (DP)": r"DP"
-    }
+def detect_ptms_detailed(sequence):
+    if not sequence: return "未知"
     alerts = []
     
-    for region_name, region_seq in regions_dict.items():
-        if not region_seq: continue
-        # 核心逻辑：仅扫描名称以 CDR 开头的区域，彻底忽略框架区 (FR)
-        if region_name.startswith("CDR"):
-            for ptm_name, motif in ptm_motifs.items():
-                for match in re.finditer(motif, region_seq):
-                    alerts.append(f"[{region_name}] {ptm_name} ({match.group()}) @{match.start()+1}")
+    # 极简高危 PTM 规则：只抓最致命的缺陷
+    ptm_motifs = {
+        'N-糖基化 (NXT/NXS)': r'N[^P][ST]',
+        '极速脱氨基 (NG)': r'NG',
+        '极速异构化 (DG)': r'DG',
+        '酸断裂点 (DP)': r'DP'
+    }
+    
+    regions = {
+        'FR1': sequence[:25], 'CDR1': sequence[25:35], 'FR2': sequence[35:50],
+        'CDR2': sequence[50:65], 'FR3': sequence[65:95], 'CDR3': sequence[95:115],
+        'FR4': sequence[115:]
+    }
+    
+    # 只对 CDR 区域的高危 PTM 报警
+    for region_name, region_seq in regions.items():
+        if region_name.startswith("CDR"):  
+            for ptm_name, pattern in ptm_motifs.items():
+                for match in re.finditer(pattern, region_seq):
+                    global_pos = len(''.join(list(regions.values())[:list(regions.keys()).index(region_name)])) + match.start() + 1
+                    alerts.append(f"[{region_name}] {ptm_name} @{global_pos}")
                     
-    return alerts
+    return " | ".join(alerts) if alerts else "无高危 PTM"
 
-def highlight_alerts(val):
-    if not isinstance(val, str):
-        return ''
-    if "🚨" in val or "⚠️" in val or "冗余克隆" in val:
-        return 'background-color: #fff3cd; color: #856404; font-weight: bold;'
-    elif "✅" in val:
-        return 'background-color: #d4edda; color: #155724;'
-    return ''
-
-st.set_page_config(page_title="工业级抗体生信解析大屏 V16", layout="wide")
-
-st.markdown("""
-<div style="background: linear-gradient(90deg, #1e3c72 0%, #2a5298 100%); padding: 25px; border-radius: 12px; margin-bottom: 25px;">
-    <h1 style="color: white; margin: 0; font-size: 2.2rem;">🔬 工业级抗体生信质控大屏 (Fv-Unique Edition)</h1>
-    <p style="color: #e0e0e0; margin-top: 10px; font-size: 1.1rem;">
-        支持自动切分CDR、全维度计算理化参数、精准过滤高变区高危 PTM。<br/>
-        <strong>V16 进阶：包含智能重复名称防覆盖、极其精准的 Cys 锚定法提取，以及多对多双链交叉配对与冗余分子去重 (Unique) 评估。</strong>
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-input_text = st.text_area("✍️ 贴入您的多条抗体 FASTA 序列 (支持混合VH和VL)", height=200, 
-                          help="每条序列需以 >开头，名称中需包含 _VH, _VL, -HC, -LC, 或带有数字后缀如 VH1, VL2 等以区分链类型。")
-
-if st.button("🚀 开始高通量并行解析", type="primary"):
-    if not input_text.strip():
-        st.warning("⚠️ 请先输入 FASTA 序列")
-    else:
-        with st.spinner("⏳ 正在进行结构解析与计算..."):
+def parse_fasta(fasta_text):
+    sequences = []
+    current_id = ""
+    current_seq = ""
+    id_counts = defaultdict(int)
+    
+    for line in fasta_text.splitlines():
+        line = line.strip()
+        if not line: continue
+        if line.startswith(">"):
+            if current_id and current_seq:
+                id_counts[current_id] += 1
+                final_id = current_id if id_counts[current_id] == 1 else f"{current_id}_Dup{id_counts[current_id]}"
+                sequences.append({"id": final_id, "seq": current_seq})
+            current_id = line[1:].strip()
+            current_seq = ""
+        else:
+            current_seq += line.upper()
             
-            parsed_seqs = []
-            name_counter = {} # 用于记录出现过的名称，解决完全同名覆盖问题
+    if current_id and current_seq:
+        id_counts[current_id] += 1
+        final_id = current_id if id_counts[current_id] == 1 else f"{current_id}_Dup{id_counts[current_id]}"
+        sequences.append({"id": final_id, "seq": current_seq})
+        
+    parsed_data = []
+    
+    for item in sequences:
+        seq_id = item["id"]
+        seq = item["seq"]
+        
+        # 兼容带数字后缀的轻重链判定 (VH1, VL2)
+        chain_type = "未知"
+        if re.search(r'[-_](VH|HC|Heavy)\d*$', seq_id, flags=re.IGNORECASE):
+            chain_type = "重链 (VH)"
+        elif re.search(r'[-_](VL|LC|Light)\d*$', seq_id, flags=re.IGNORECASE):
+            chain_type = "轻链 (VL)"
             
-            for part in input_text.split(">"):
-                if not part.strip(): continue
-                lines = part.strip().split("\n")
-                raw_name = lines[0].strip()
-                seq = "".join(lines[1:]).replace(" ", "").upper()
-                
-                if raw_name and seq:
-                    # 如果遇到同名序列，自动追加 _Dup 编号后缀避免 Pandas/Dict 覆盖
-                    if raw_name in name_counter:
-                        name_counter[raw_name] += 1
-                        match = re.search(r'([-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)[0-9]*)$', raw_name, flags=re.IGNORECASE)
-                        if match:
-                            suffix = match.group(1)
-                            base = raw_name[:-len(suffix)]
-                            safe_name = f"{base}_Dup{name_counter[raw_name]}{suffix}"
-                        else:
-                            safe_name = f"{raw_name}_Dup{name_counter[raw_name]}"
-                    else:
-                        name_counter[raw_name] = 1
-                        safe_name = raw_name
+        cdr3_seq = "解析失败"
+        cdr3_len = 0
+        match = re.search(r'C([A-Z]{3,25}?)[WF]G.G', seq)
+        if match:
+            cdr3_seq = match.group(1)
+            cdr3_len = len(cdr3_seq)
+            
+        parsed_data.append({
+            '序列名称 (ID)': seq_id,
+            '链类型': chain_type,
+            '归属分子名': extract_base_name(seq_id),
+            '全长序列': seq,
+            '理论等电点 (pI)': calculate_pi(seq),
+            'CDR3序列 (预估)': cdr3_seq,
+            'CDR3长度': cdr3_len,
+            '全长疏水指数 (GRAVY)': calculate_gravy(seq),
+            '高危 PTM 风险预警': detect_ptms_detailed(seq)
+        })
+        
+    return pd.DataFrame(parsed_data)
+
+st.set_page_config(page_title="工业级抗体生信大屏_V16", layout="wide")
+st.title("🧬 工业级抗体序列质控与 Fv 配对中台 (V16 最终版)")
+
+with st.sidebar:
+    st.header("📥 数据输入区")
+    fasta_input = st.text_area("请粘贴 FASTA 序列 (支持数百条序列混合):", height=300)
+    process_btn = st.button("🚀 开始极速分析", type="primary")
+
+if process_btn and fasta_input:
+    with st.spinner("正在进行智能去重、序列切片与 PTM 雷达扫描..."):
+        df_all = parse_fasta(fasta_input)
+        
+        st.subheader(f"📊 单链全景质控总表 (共识别 {len(df_all)} 条序列)")
+        st.dataframe(df_all, use_container_width=True)
+        
+        st.subheader("🔗 Fv 双链组装与聚类排重评估")
+        
+        paired_data = []
+        for base_name, group in df_all.groupby('归属分子名'):
+            vhs = group[group['链类型'] == '重链 (VH)']
+            vls = group[group['链类型'] == '轻链 (VL)']
+            
+            if not vhs.empty and not vls.empty:
+                for _, vh in vhs.iterrows():
+                    for _, vl in vls.iterrows():
+                        vh_id = vh['序列名称 (ID)']
+                        vl_id = vl['序列名称 (ID)']
                         
-                    parsed_seqs.append((safe_name, seq))
-
-            results = []
-            for name, seq in parsed_seqs:
-                is_vh = re.search(r'[-_](VH|HC|Heavy_Chain|Heavy)[0-9]*$', name, flags=re.IGNORECASE)
-                is_vl = re.search(r'[-_](VL|LC|Light_Chain|Light)[0-9]*$', name, flags=re.IGNORECASE)
+                        # 兼容多链命名 (例如：展示为 F0630-24C7 (VH1/VL2))
+                        combo_name = base_name if (len(vhs)==1 and len(vls)==1) else f"{base_name} ({vh_id}/{vl_id})"
+                        
+                        fv_fingerprint = vh['全长序列'] + "||" + vl['全长序列']
+                        
+                        vh_pi = vh['理论等电点 (pI)']
+                        vl_pi = vl['理论等电点 (pI)']
+                        delta_pi = round(abs(vh_pi - vl_pi), 2) if vh_pi and vl_pi else None
+                        
+                        vh_ptm = vh['高危 PTM 风险预警']
+                        vl_ptm = vl['高危 PTM 风险预警']
+                        ptm_summary = ""
+                        if vh_ptm != "无高危 PTM": ptm_summary += f"VH: {vh_ptm} | "
+                        if vl_ptm != "无高危 PTM": ptm_summary += f"VL: {vl_ptm}"
+                        ptm_summary = ptm_summary.strip(" | ") if ptm_summary else "☑️ Fv 无高危 PTM"
+                        
+                        paired_data.append({
+                            '组合分子名': combo_name,
+                            '具体链组合': f"重链: {vh_id} | 轻链: {vl_id}",
+                            '指纹 (Fingerprint)': fv_fingerprint,
+                            '重链_pI': vh_pi,
+                            '轻链_pI': vl_pi,
+                            'ΔpI': delta_pi,
+                            'PTM风险汇总': ptm_summary
+                        })
+                        
+        if paired_data:
+            df_paired_raw = pd.DataFrame(paired_data)
+            cluster_data = []
+            
+            for fp, group in df_paired_raw.groupby('指纹 (Fingerprint)'):
+                count = len(group)
+                rep_name = group.iloc[0]['组合分子名']
+                chain_details = group.iloc[0]['具体链组合']
+                merged_names = ", ".join(group['组合分子名'].tolist())
+                unique_flag = "☑️ 唯一 (Unique)" if count == 1 else f"⚠️ 冗余 (Dup x{count})"
                 
-                chain_type = "未知"
-                cdrs = {"CDR1": "", "CDR2": "", "CDR3": ""}
-                regions = {"FR1": "", "CDR1": "", "FR2": "", "CDR2": "", "FR3": "", "CDR3": "", "FR4": ""}
-                
-                if is_vh:
-                    chain_type = "重链/纳米抗体"
-                    cdrs, regions = extract_vh_cdrs_regex(seq)
-                elif is_vl:
-                    chain_type = "轻链"
-                    cdrs, regions = extract_vl_cdrs_regex(seq)
-
-                mw = calculate_mw(seq)
-                pi = calculate_pi(seq)
-                gravy = calculate_gravy(seq)
-                cdr3_gravy = calculate_gravy(cdrs["CDR3"])
-                
-                cys_count = seq.count('C')
-                cys_alert = f"🚨 奇数 ({cys_count})" if cys_count % 2 != 0 else f"✅ 正常 ({cys_count})"
-                
-                ptms = detect_ptms_detailed(regions)
-                ptm_alert = " | ".join(ptms) if ptms else "✅ 无高危"
-                
-                results.append({
-                    "序列名称 (ID)": name,
-                    "类型": chain_type,
-                    "CDR1": cdrs["CDR1"],
-                    "CDR2": cdrs["CDR2"],
-                    "CDR3": cdrs["CDR3"],
-                    "CDR3长度": len(cdrs["CDR3"]) if cdrs["CDR3"] else 0,
-                    "完整序列": seq,
-                    "分子量 (Da)": mw,
-                    "pI (等电点)": pi,
-                    "完整 GRAVY": gravy,
-                    "CDR3 GRAVY": cdr3_gravy,
-                    "孤立Cys 雷达": cys_alert,
-                    "PTM 风险预警": ptm_alert
+                delta_pi = group.iloc[0]['ΔpI']
+                qc_status = "✅ 正常"
+                # ΔpI 过大降级为关注提示，不报红
+                if delta_pi and delta_pi > 2.0:
+                    qc_status = "⚠️ 关注: ΔpI过大"
+                    
+                cluster_data.append({
+                    '唯一性 (Unique)': unique_flag,
+                    '包含相同配对数': count,
+                    '代表分子名': rep_name,
+                    '具体链组合': chain_details,
+                    '合并来源分子名': merged_names,
+                    '重链_pI': group.iloc[0]['重链_pI'],
+                    '轻链_pI': group.iloc[0]['轻链_pI'],
+                    'ΔpI': delta_pi,
+                    'Fv质控状态': qc_status,
+                    'PTM风险汇总': group.iloc[0]['PTM风险汇总']
                 })
-            
-            df = pd.DataFrame(results)
-            st.success(f"✅ 解析成功！输入了 {sum(name_counter.values())} 条序列，共成功识别提取 {len(df)} 条单链 (有效捕获率 100%)。")
-            
-            st.markdown("#### 📊 CMC 单链分析总表")
-            st.dataframe(df.style.map(highlight_alerts, subset=['孤立Cys 雷达', 'PTM 风险预警']), use_container_width=True)
-            
-            def extract_base_name(name_str):
-                return re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)[0-9]*$', '', name_str, flags=re.IGNORECASE).strip()
-            
-            df['归属分子名'] = df['序列名称 (ID)'].apply(extract_base_name)
-            
-            paired_data = []
-            for core_name, group in df.groupby('归属分子名'):
-                vh_rows = group[group['类型'].str.contains('重链')]
-                vl_rows = group[group['类型'].str.contains('轻链')]
                 
-                if not vh_rows.empty and not vl_rows.empty:
-                    for _, vh_row in vh_rows.iterrows():
-                        for _, vl_row in vl_rows.iterrows():
-                            vh_seq = vh_row['完整序列']
-                            vl_seq = vl_row['完整序列']
-                            vh_id = vh_row['序列名称 (ID)']
-                            vl_id = vl_row['序列名称 (ID)']
-                            
-                            vh_match = re.search(r'[-_]([A-Za-z0-9_]+)$', vh_id)
-                            vl_match = re.search(r'[-_]([A-Za-z0-9_]+)$', vl_id)
-                            v_str = vh_match.group(1) if vh_match else "VH"
-                            l_str = vl_match.group(1) if vl_match else "VL"
-                            
-                            pair_name = f"{core_name} ({v_str}/{l_str})"
+            # 先排序，再进行列切片，彻底避免 KeyError
+            df_paired_final = pd.DataFrame(cluster_data).sort_values(
+                by=['包含相同配对数', '代表分子名'], ascending=[False, True]
+            )[[
+                '唯一性 (Unique)', '包含相同配对数', '代表分子名', '具体链组合', '合并来源分子名', 
+                '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
+            ]]
+            
+            def highlight_fv(row):
+                colors = [''] * len(row)
+                if '⚠️ 冗余' in str(row['唯一性 (Unique)']):
+                    colors[row.index.get_loc('唯一性 (Unique)')] = 'background-color: #ffebb5; color: black;'
+                if '⚠️ 关注' in str(row['Fv质控状态']):
+                    colors[row.index.get_loc('Fv质控状态')] = 'background-color: #e2e3e5; color: #383d41;' # 降级为灰色信息
+                if 'VH' in str(row['PTM风险汇总']) or 'VL' in str(row['PTM风险汇总']):
+                    colors[row.index.get_loc('PTM风险汇总')] = 'background-color: #f8d7da; color: #721c24;'
+                return colors
 
-                            vh_pi = vh_row['pI (等电点)']
-                            vl_pi = vl_row['pI (等电点)']
-                            delta_pi = abs(vh_pi - vl_pi)
-                            
-                            warning_flag = "⚠️ 关注" if delta_pi > 2.0 else "✅ 正常"
-                            
-                            vh_ptm = vh_row['PTM 风险预警']
-                            vl_ptm = vl_row['PTM 风险预警']
-                            combined_ptm = []
-                            if vh_ptm and "✅" not in vh_ptm:
-                                combined_ptm.append(f"VH: {vh_ptm}")
-                            if vl_ptm and "✅" not in vl_ptm:
-                                combined_ptm.append(f"VL: {vl_ptm}")
-                            ptm_summary = " | ".join(combined_ptm) if combined_ptm else "✅ Fv 无高危 PTM"
-
-                            paired_data.append({
-                                "代表分子名": core_name,
-                                "具体组合名": pair_name,
-                                "具体链组合": f"{vh_id} + {vl_id}",
-                                "VH_Seq": vh_seq, "VL_Seq": vl_seq,
-                                "重链_pI": vh_pi, "轻链_pI": vl_pi,
-                                "ΔpI": round(delta_pi, 2), "Fv质控状态": warning_flag,
-                                "PTM风险汇总": ptm_summary
-                            })
+            st.dataframe(df_paired_final.style.apply(highlight_fv, axis=1), use_container_width=True)
             
-            df_paired = pd.DataFrame(paired_data)
-            df_paired_final = pd.DataFrame()
-            
-            if not df_paired.empty:
-                df_paired['Fv_Fingerprint'] = df_paired['VH_Seq'] + "||" + df_paired['VL_Seq']
+            if len(df_all) > 0:
+                output = io.BytesIO()
+                # 引擎替换为系统标配的 openpyxl，修复导出报错
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_all.to_excel(writer, index=False, sheet_name='完整单链数据')
+                    df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
                 
-                fv_cluster = df_paired.groupby('Fv_Fingerprint').agg(
-                    包含相同配对数=('代表分子名', 'count'),
-                    代表分子名=('具体组合名', 'first'),
-                    合并来源分子名=('代表分子名', lambda x: ', '.join(x.unique())),
-                    具体链组合=('具体链组合', lambda x: ', '.join(x.unique())),
-                    重链_pI=('重链_pI', 'first'),
-                    轻链_pI=('轻链_pI', 'first'),
-                    ΔpI=('ΔpI', 'first'),
-                    Fv质控状态=('Fv质控状态', 'first'),
-                    PTM风险汇总=('PTM风险汇总', 'first')
-                ).reset_index()
-                
-                fv_cluster['唯一性 (Unique)'] = fv_cluster['包含相同配对数'].apply(
-                    lambda x: "✅ 唯一 (Unique)" if x == 1 else f"⚠️ 冗余克隆 (Dup x{x})"
+                st.download_button(
+                    label="💾 下载完整生信分析报告 (Excel)",
+                    data=output.getvalue(),
+                    file_name="工业级抗体大屏分析报告_V16版.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-                
-                df_paired_final = fv_cluster.sort_values(
-                    by=['包含相同配对数', '代表分子名'], ascending=[False, True]
-                )[[
-                    '唯一性 (Unique)', '包含相同配对数', '代表分子名', '合并来源分子名', '具体链组合',
-                    '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
-                ]]
-                
-                st.markdown("#### ⚖️ Fv 双链配对与去重 (Unique / Duplicate) 判定")
-                st.info(f"💡 共成功组装出 {len(paired_data)} 种 Fv 双链交叉配对组合，经全局指纹去重后得到 {len(df_paired_final)} 种唯一抗体 (Unique Clones)。")
-                st.dataframe(df_paired_final.style.map(highlight_alerts, subset=['唯一性 (Unique)', 'Fv质控状态', 'PTM风险汇总']), use_container_width=True)
-
-            st.markdown("#### 🧬 CDR3 核心指纹与多样性聚类")
-            col1, col2 = st.columns(2)
-            df_cdr3 = df[df["CDR3"].str.len() > 0]
-            
-            with col1:
-                st.write("**🛡️ 重链 (VH) CDR3 家族**")
-                vh_cdr3 = df_cdr3[df_cdr3['类型'].str.contains('重链')]
-                if not vh_cdr3.empty:
-                    vh_cluster = vh_cdr3.groupby('CDR3').agg(
-                        出现频次=('序列名称 (ID)', 'count'),
-                        CDR3长度=('CDR3长度', 'first'),
-                        来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x))
-                    ).reset_index().sort_values(by='出现频次', ascending=False)
-                    st.dataframe(vh_cluster, use_container_width=True)
-                else:
-                    st.write("未提取到重链 CDR3")
-
-            with col2:
-                st.write("**🪃 轻链 (VL) CDR3 家族**")
-                vl_cdr3 = df_cdr3[df_cdr3['类型'].str.contains('轻链')]
-                if not vl_cdr3.empty:
-                    vl_cluster = vl_cdr3.groupby('CDR3').agg(
-                        出现频次=('序列名称 (ID)', 'count'),
-                        CDR3长度=('CDR3长度', 'first'),
-                        来源分子名单=('序列名称 (ID)', lambda x: ', '.join(x))
-                    ).reset_index().sort_values(by='出现频次', ascending=False)
-                    st.dataframe(vl_cluster, use_container_width=True)
-                else:
-                    st.write("未提取到轻链 CDR3")
-
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='完整单链数据')
-                if not df_paired_final.empty:
-                    df_paired_final.to_excel(writer, index=False, sheet_name='Fv交叉配对与去重')
-                
-                ptm_report = df[~df['PTM 风险预警'].str.contains("✅")]
-                ptm_report.to_excel(writer, index=False, sheet_name='高危PTM风险报表')
-                
-                if not vh_cdr3.empty:
-                    vh_cluster.to_excel(writer, index=False, sheet_name='重链CDR3多样性')
-                if not vl_cdr3.empty:
-                    vl_cluster.to_excel(writer, index=False, sheet_name='轻链CDR3多样性')
-                
-            processed_data = output.getvalue()
-            b64 = base64.b64encode(processed_data).decode()
-            href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="Antibody_Report_V16_Final.xlsx" style="display:inline-block; padding: 10px 20px; color: white; background-color: #28a745; text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 20px;">📥 下载完整分析报告 (Excel)</a>'
-            st.markdown(href, unsafe_allow_html=True)
+        else:
+            st.info("尚未识别到可以成功成对的 VH/VL 序列。")
