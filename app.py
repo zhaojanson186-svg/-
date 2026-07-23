@@ -131,6 +131,41 @@ if process_btn and fasta_input:
         st.subheader(f"📊 单链全景质控总表 (共识别 {len(df_all)} 条序列)")
         st.dataframe(df_all, use_container_width=True)
         
+        st.subheader("🧬 CDR3 聚类与克隆唯一性分析 (克隆多样性评估)")
+        
+        valid_cdr3 = df_all[df_all['CDR3序列 (预估)'] != '解析失败']
+        df_cdr3_final = None
+        if not valid_cdr3.empty:
+            cdr3_cluster = []
+            for cdr3, group in valid_cdr3.groupby('CDR3序列 (预估)'):
+                count = len(group)
+                chain_type = group.iloc[0]['链类型']
+                rep_id = group.iloc[0]['序列名称 (ID)']
+                merged_ids = ", ".join(group['序列名称 (ID)'].tolist())
+                unique_flag = "☑️ 唯一克隆" if count == 1 else f"🔥 优势富集 (x{count})"
+                
+                cdr3_cluster.append({
+                    '克隆状态': unique_flag,
+                    '丰度': count,
+                    '链类型': chain_type,
+                    'CDR3序列': cdr3,
+                    'CDR3长度': len(cdr3),
+                    '代表序列ID': rep_id,
+                    '包含序列集合': merged_ids
+                })
+            
+            df_cdr3_final = pd.DataFrame(cdr3_cluster).sort_values(by=['丰度', 'CDR3长度'], ascending=[False, True])
+            
+            def highlight_cdr3(row):
+                colors = [''] * len(row)
+                if '🔥 优势富集' in str(row['克隆状态']):
+                    colors[row.index.get_loc('克隆状态')] = 'background-color: #ffebb5; color: #856404; font-weight: bold;'
+                return colors
+                
+            st.dataframe(df_cdr3_final.style.apply(highlight_cdr3, axis=1), use_container_width=True)
+        else:
+            st.info("尚未成功解析到有效的 CDR3 序列。")
+
         st.subheader("🔗 Fv 双链组装与聚类排重评估")
         
         paired_data = []
@@ -225,6 +260,10 @@ if process_btn and fasta_input:
                 # 引擎替换为系统标配的 openpyxl，修复导出报错
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_all.to_excel(writer, index=False, sheet_name='完整单链数据')
+                    
+                    if df_cdr3_final is not None and not df_cdr3_final.empty:
+                        df_cdr3_final.to_excel(writer, index=False, sheet_name='CDR3克隆聚类')
+                        
                     df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
                 
                 st.download_button(
