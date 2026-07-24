@@ -4,7 +4,7 @@ import re
 import io
 from collections import defaultdict
 
-PI_DICT = {'D': 2.77, 'E': 3.22, 'C': 8.18, 'Y': 10.46, 'H': 6.00, 'K': 10.53, 'R': 12.48}
+# 移除旧的粗略 PI_DICT，因为它的线性加减公式不符合真实的化学电离平衡
 GRAVY_DICT = {
     'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5, 'E': -3.5, 'G': -0.4,
     'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8,
@@ -13,12 +13,42 @@ GRAVY_DICT = {
 
 def calculate_pi(sequence):
     if not sequence: return None
-    charge = 0.0
-    for aa in sequence:
-        if aa in PI_DICT:
-            if aa in ['K', 'R', 'H']: charge += 1
-            elif aa in ['D', 'E', 'C', 'Y']: charge -= 1
-    return round(7.0 + (charge * 0.1), 2) 
+    
+    # 采用国际标准的 ExPASy ProtParam pKa 标尺
+    pKa_pos = {'K': 10.0, 'R': 12.5, 'H': 6.0, 'N-term': 8.0}
+    pKa_neg = {'D': 3.9, 'E': 4.1, 'C': 8.3, 'Y': 10.0, 'C-term': 3.1}
+    
+    # 统计各氨基酸数量，加速计算
+    counts = {aa: sequence.count(aa) for aa in set(sequence)}
+    
+    # 定义计算特定 pH 下净电荷的函数 (基于 Henderson-Hasselbalch 方程)
+    def net_charge(pH):
+        charge = 0.0
+        # N端游离氨基的正电荷贡献
+        charge += 10**pKa_pos['N-term'] / (10**pH + 10**pKa_pos['N-term'])
+        # 碱性氨基酸正电荷贡献 (K, R, H)
+        for aa in ['K', 'R', 'H']:
+            if aa in counts:
+                charge += counts[aa] * (10**pKa_pos[aa] / (10**pH + 10**pKa_pos[aa]))
+        
+        # C端游离羧基的负电荷贡献
+        charge -= 10**pH / (10**pH + 10**pKa_neg['C-term'])
+        # 酸性氨基酸负电荷贡献 (D, E, C, Y)
+        for aa in ['D', 'E', 'C', 'Y']:
+            if aa in counts:
+                charge -= counts[aa] * (10**pH / (10**pH + 10**pKa_neg[aa]))
+        return charge
+
+    # 使用二分法 (Bisection method) 在 pH 0-14 范围内寻找净电荷逼近于 0 的 pH 值 (即 pI)
+    pH_min, pH_max = 0.0, 14.0
+    for _ in range(100):
+        pH_mid = (pH_min + pH_max) / 2
+        if net_charge(pH_mid) > 0:
+            pH_min = pH_mid  # 净电荷为正，说明环境太酸，需要提高 pH
+        else:
+            pH_max = pH_mid  # 净电荷为负，说明环境太碱，需要降低 pH
+            
+    return round(pH_mid, 2)
 
 def calculate_gravy(sequence):
     if not sequence: return None
