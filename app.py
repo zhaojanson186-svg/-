@@ -53,6 +53,7 @@ def calculate_pi(sequence):
     return round(pH_mid, 2)
 
 def calculate_gravy(sequence):
+    """计算序列平均疏水性指数"""
     if not sequence: return None
     total = sum(GRAVY_DICT.get(aa, 0) for aa in sequence)
     return round(total / len(sequence), 2)
@@ -93,6 +94,7 @@ def detect_ptms_detailed(sequence):
 
 @st.cache_data
 def parse_fasta(fasta_text):
+    """解析输入的FASTA序列，支持自动去重命名和CDR提取"""
     sequences = []
     current_id = ""
     current_seq = ""
@@ -151,7 +153,7 @@ def parse_fasta(fasta_text):
     return pd.DataFrame(parsed_data)
 
 st.set_page_config(page_title="工业级抗体生信大屏_V16", layout="wide")
-st.title("🧬 工业级抗体序列质控与 Fv 配对中台 (V16 最终版)")
+st.title("🧬 工业级抗体序列质控与 Fv 配对中台 (V16 纯净完全版)")
 
 with st.sidebar:
     st.header("📥 数据输入区")
@@ -275,7 +277,7 @@ if st.session_state.analysis_started and fasta_input:
                     'ΔpI': delta_pi,
                     'Fv质控状态': qc_status,
                     'PTM风险汇总': group.iloc[0]['PTM风险汇总'],
-                    '_Fv_Seq_Fingerprint': fp # 隐藏的完整双链序列
+                    '_Fv_Seq_Fingerprint': fp # 隐藏的完整双链序列，用于计算多度性
                 })
                 
             # 先排序，避免列名缺失
@@ -307,8 +309,9 @@ if st.session_state.analysis_started and fasta_input:
             
             num_unique_clones = len(df_paired_full)
             if num_unique_clones > 2:
+                # 放宽上限至 200
                 target_n = st.slider("请选择计划挑取进行下游验证的克隆数量：", 
-                                     min_value=2, max_value=min(50, num_unique_clones), value=min(5, num_unique_clones))
+                                     min_value=2, max_value=min(200, num_unique_clones), value=min(5, num_unique_clones))
                 
                 # 距离矩阵计算引擎
                 pool = df_paired_full.to_dict('records')
@@ -343,7 +346,7 @@ if st.session_state.analysis_started and fasta_input:
                     unselected_indices.remove(best_cand)
                 
                 df_diverse = df_paired_full.iloc[selected_indices][display_cols].copy()
-                df_diverse.insert(0, '建议优先级', [f"🥇 差异化 Top {i+1}" for i in range(len(df_diverse))])
+                df_diverse.insert(0, '建议纯化优先级', [f"🥇 Top {i+1}" for i in range(len(df_diverse))])
                 df_diverse_final = df_diverse
                 
                 st.success(f"已为您锁定 {target_n} 个在全局序列空间中发散度最高的种子克隆：")
@@ -351,7 +354,7 @@ if st.session_state.analysis_started and fasta_input:
             else:
                 st.info("数据量不足以触发差异化聚类分析。")
             
-            # Excel 打包下载 (修复版 openpyxl)
+            # Excel 打包下载 (已修复为 openpyxl 引擎)
             if len(df_all) > 0:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
