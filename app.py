@@ -91,6 +91,7 @@ def detect_ptms_detailed(sequence):
                     
     return " | ".join(alerts) if alerts else "无高危 PTM"
 
+@st.cache_data
 def parse_fasta(fasta_text):
     sequences = []
     current_id = ""
@@ -157,7 +158,14 @@ with st.sidebar:
     fasta_input = st.text_area("请粘贴 FASTA 序列 (支持多序列混合输入):", height=300)
     process_btn = st.button("🚀 开始极速分析", type="primary")
 
+# 修复：使用 session_state 记录分析状态，防止滑块拖动触发 Rerun 时页面变白
+if 'analysis_started' not in st.session_state:
+    st.session_state.analysis_started = False
+
 if process_btn and fasta_input:
+    st.session_state.analysis_started = True
+
+if st.session_state.analysis_started and fasta_input:
     with st.spinner("正在进行智能去重、序列切片、理化计算与 PTM 雷达扫描..."):
         
         # 1. 基础解析与总表展示
