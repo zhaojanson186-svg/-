@@ -2,26 +2,28 @@ import streamlit as st
 import pandas as pd
 import re
 import io
+import difflib
 from collections import defaultdict
 
-# 移除旧的粗略 PI_DICT，因为它的线性加减公式不符合真实的化学电离平衡
+# 全局疏水性指数字典 (GRAVY)
 GRAVY_DICT = {
     'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5, 'E': -3.5, 'G': -0.4,
     'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8,
     'T': -0.7, 'W': -0.9, 'Y': -1.3, 'V': 4.2
 }
 
+# 采用国际标准的 ExPASy ProtParam pKa 标尺
+pKa_pos = {'K': 10.0, 'R': 12.5, 'H': 6.0, 'N-term': 8.0}
+pKa_neg = {'D': 3.9, 'E': 4.1, 'C': 8.3, 'Y': 10.0, 'C-term': 3.1}
+
 def calculate_pi(sequence):
+    """基于二分法迭代与Henderson-Hasselbalch方程计算等电点"""
     if not sequence: return None
-    
-    # 采用国际标准的 ExPASy ProtParam pKa 标尺
-    pKa_pos = {'K': 10.0, 'R': 12.5, 'H': 6.0, 'N-term': 8.0}
-    pKa_neg = {'D': 3.9, 'E': 4.1, 'C': 8.3, 'Y': 10.0, 'C-term': 3.1}
     
     # 统计各氨基酸数量，加速计算
     counts = {aa: sequence.count(aa) for aa in set(sequence)}
     
-    # 定义计算特定 pH 下净电荷的函数 (基于 Henderson-Hasselbalch 方程)
+    # 定义计算特定 pH 下净电荷的函数
     def net_charge(pH):
         charge = 0.0
         # N端游离氨基的正电荷贡献
@@ -39,14 +41,14 @@ def calculate_pi(sequence):
                 charge -= counts[aa] * (10**pH / (10**pH + 10**pKa_neg[aa]))
         return charge
 
-    # 使用二分法 (Bisection method) 在 pH 0-14 范围内寻找净电荷逼近于 0 的 pH 值 (即 pI)
+    # 使用二分法寻找净电荷逼近于 0 的 pH 值
     pH_min, pH_max = 0.0, 14.0
     for _ in range(100):
         pH_mid = (pH_min + pH_max) / 2
         if net_charge(pH_mid) > 0:
-            pH_min = pH_mid  # 净电荷为正，说明环境太酸，需要提高 pH
+            pH_min = pH_mid  
         else:
-            pH_max = pH_mid  # 净电荷为负，说明环境太碱，需要降低 pH
+            pH_max = pH_mid  
             
     return round(pH_mid, 2)
 
@@ -56,29 +58,30 @@ def calculate_gravy(sequence):
     return round(total / len(sequence), 2)
 
 def extract_base_name(name):
-    # 标准 flags=re.IGNORECASE，且 \d*$ 兼容 VH1, VL2 等带数字的后缀
+    """提取纯净的克隆归属名称，忽略后缀如_VH1, -VL3等"""
     base = re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)\d*$', '', name, flags=re.IGNORECASE).strip()
     return base
 
 def detect_ptms_detailed(sequence):
+    """只抓取最致命的4类CDR区突变缺陷"""
     if not sequence: return "未知"
     alerts = []
     
-    # 极简高危 PTM 规则：只抓最致命的缺陷
     ptm_motifs = {
-        'N-糖基化 (NXT/NXS)': r'N[^P][ST]',
+        'N-糖基化 (NIT)': r'N[^P][ST]',
         '极速脱氨基 (NG)': r'NG',
         '极速异构化 (DG)': r'DG',
         '酸断裂点 (DP)': r'DP'
     }
     
+    # 按照国际通用的 Kabat/IMGT 大致分布进行分段(估算)
     regions = {
         'FR1': sequence[:25], 'CDR1': sequence[25:35], 'FR2': sequence[35:50],
         'CDR2': sequence[50:65], 'FR3': sequence[65:95], 'CDR3': sequence[95:115],
         'FR4': sequence[115:]
     }
     
-    # 只对 CDR 区域的高危 PTM 报警
+    # 只对 CDR 区域报警
     for region_name, region_seq in regions.items():
         if region_name.startswith("CDR"):  
             for ptm_name, pattern in ptm_motifs.items():
@@ -113,18 +116,18 @@ def parse_fasta(fasta_text):
         sequences.append({"id": final_id, "seq": current_seq})
         
     parsed_data = []
-    
     for item in sequences:
         seq_id = item["id"]
         seq = item["seq"]
         
-        # 兼容带数字后缀的轻重链判定 (VH1, VL2)
+        # 兼容带数字的链识别
         chain_type = "未知"
         if re.search(r'[-_](VH|HC|Heavy)\d*$', seq_id, flags=re.IGNORECASE):
             chain_type = "重链 (VH)"
         elif re.search(r'[-_](VL|LC|Light)\d*$', seq_id, flags=re.IGNORECASE):
             chain_type = "轻链 (VL)"
             
+        # 优化版的 CDR3 Cys 锚定提取算法
         cdr3_seq = "解析失败"
         cdr3_len = 0
         match = re.search(r'C([A-Z]{3,25}?)[WF]G.G', seq)
@@ -151,18 +154,19 @@ st.title("🧬 工业级抗体序列质控与 Fv 配对中台 (V16 最终版)")
 
 with st.sidebar:
     st.header("📥 数据输入区")
-    fasta_input = st.text_area("请粘贴 FASTA 序列 (支持数百条序列混合):", height=300)
+    fasta_input = st.text_area("请粘贴 FASTA 序列 (支持多序列混合输入):", height=300)
     process_btn = st.button("🚀 开始极速分析", type="primary")
 
 if process_btn and fasta_input:
-    with st.spinner("正在进行智能去重、序列切片与 PTM 雷达扫描..."):
-        df_all = parse_fasta(fasta_input)
+    with st.spinner("正在进行智能去重、序列切片、理化计算与 PTM 雷达扫描..."):
         
+        # 1. 基础解析与总表展示
+        df_all = parse_fasta(fasta_input)
         st.subheader(f"📊 单链全景质控总表 (共识别 {len(df_all)} 条序列)")
         st.dataframe(df_all, use_container_width=True)
         
+        # 2. CDR3 聚类分析模块
         st.subheader("🧬 CDR3 聚类与克隆唯一性分析 (克隆多样性评估)")
-        
         valid_cdr3 = df_all[df_all['CDR3序列 (预估)'] != '解析失败']
         df_cdr3_final = None
         if not valid_cdr3.empty:
@@ -188,7 +192,7 @@ if process_btn and fasta_input:
             
             def highlight_cdr3(row):
                 colors = [''] * len(row)
-                if '🔥 优势富集' in str(row['克隆状态']):
+                if '🔥 优势富集' in str(row.get('克隆状态', '')):
                     colors[row.index.get_loc('克隆状态')] = 'background-color: #ffebb5; color: #856404; font-weight: bold;'
                 return colors
                 
@@ -196,8 +200,8 @@ if process_btn and fasta_input:
         else:
             st.info("尚未成功解析到有效的 CDR3 序列。")
 
+        # 3. 笛卡尔积配对与 Fv 排重模块
         st.subheader("🔗 Fv 双链组装与聚类排重评估")
-        
         paired_data = []
         for base_name, group in df_all.groupby('归属分子名'):
             vhs = group[group['链类型'] == '重链 (VH)']
@@ -209,9 +213,7 @@ if process_btn and fasta_input:
                         vh_id = vh['序列名称 (ID)']
                         vl_id = vl['序列名称 (ID)']
                         
-                        # 兼容多链命名 (例如：展示为 F0630-24C7 (VH1/VL2))
                         combo_name = base_name if (len(vhs)==1 and len(vls)==1) else f"{base_name} ({vh_id}/{vl_id})"
-                        
                         fv_fingerprint = vh['全长序列'] + "||" + vl['全长序列']
                         
                         vh_pi = vh['理论等电点 (pI)']
@@ -235,6 +237,9 @@ if process_btn and fasta_input:
                             'PTM风险汇总': ptm_summary
                         })
                         
+        df_paired_final = None
+        df_diverse_final = None
+        
         if paired_data:
             df_paired_raw = pd.DataFrame(paired_data)
             cluster_data = []
@@ -248,7 +253,6 @@ if process_btn and fasta_input:
                 
                 delta_pi = group.iloc[0]['ΔpI']
                 qc_status = "✅ 正常"
-                # ΔpI 过大降级为关注提示，不报红
                 if delta_pi and delta_pi > 2.0:
                     qc_status = "⚠️ 关注: ΔpI过大"
                     
@@ -262,44 +266,102 @@ if process_btn and fasta_input:
                     '轻链_pI': group.iloc[0]['轻链_pI'],
                     'ΔpI': delta_pi,
                     'Fv质控状态': qc_status,
-                    'PTM风险汇总': group.iloc[0]['PTM风险汇总']
+                    'PTM风险汇总': group.iloc[0]['PTM风险汇总'],
+                    '_Fv_Seq_Fingerprint': fp # 隐藏的完整双链序列
                 })
                 
-            # 先排序，再进行列切片，彻底避免 KeyError
-            df_paired_final = pd.DataFrame(cluster_data).sort_values(
+            # 先排序，避免列名缺失
+            df_paired_full = pd.DataFrame(cluster_data).sort_values(
                 by=['包含相同配对数', '代表分子名'], ascending=[False, True]
-            )[[
+            )
+            
+            display_cols = [
                 '唯一性 (Unique)', '包含相同配对数', '代表分子名', '具体链组合', '合并来源分子名', 
                 '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
-            ]]
+            ]
+            df_paired_final = df_paired_full[display_cols]
             
             def highlight_fv(row):
                 colors = [''] * len(row)
-                if '⚠️ 冗余' in str(row['唯一性 (Unique)']):
+                if '⚠️ 冗余' in str(row.get('唯一性 (Unique)', '')):
                     colors[row.index.get_loc('唯一性 (Unique)')] = 'background-color: #ffebb5; color: black;'
-                if '⚠️ 关注' in str(row['Fv质控状态']):
-                    colors[row.index.get_loc('Fv质控状态')] = 'background-color: #e2e3e5; color: #383d41;' # 降级为灰色信息
-                if 'VH' in str(row['PTM风险汇总']) or 'VL' in str(row['PTM风险汇总']):
+                if '⚠️ 关注' in str(row.get('Fv质控状态', '')):
+                    colors[row.index.get_loc('Fv质控状态')] = 'background-color: #e2e3e5; color: #383d41;'
+                if 'VH' in str(row.get('PTM风险汇总', '')) or 'VL' in str(row.get('PTM风险汇总', '')):
                     colors[row.index.get_loc('PTM风险汇总')] = 'background-color: #f8d7da; color: #721c24;'
                 return colors
 
             st.dataframe(df_paired_final.style.apply(highlight_fv, axis=1), use_container_width=True)
+        
+            # ================= 新增：Fv 智能差异化挑选模块 (Max-Min 算法) =================
+            st.subheader("🌈 智能序列差异化推荐池 (Diversity Picker)")
+            st.markdown("基于 Max-Min 序列距离算法，从全部排重克隆中计算并挑选彼此差异最大的分子，最大化命中多表位，节省纯化资源。")
             
+            num_unique_clones = len(df_paired_full)
+            if num_unique_clones > 2:
+                target_n = st.slider("请选择计划挑取进行下游验证的克隆数量：", 
+                                     min_value=2, max_value=min(50, num_unique_clones), value=min(5, num_unique_clones))
+                
+                # 距离矩阵计算引擎
+                pool = df_paired_full.to_dict('records')
+                def calc_dist(seq1, seq2):
+                    return 1.0 - difflib.SequenceMatcher(None, seq1, seq2).ratio()
+                
+                dist_matrix = {}
+                for i in range(num_unique_clones):
+                    for j in range(i+1, num_unique_clones):
+                        d = calc_dist(pool[i]['_Fv_Seq_Fingerprint'], pool[j]['_Fv_Seq_Fingerprint'])
+                        dist_matrix[(i, j)] = d
+                        dist_matrix[(j, i)] = d
+                
+                # 寻找最远种子
+                max_d, seed1, seed2 = -1, 0, 1
+                for i in range(num_unique_clones):
+                    for j in range(i+1, num_unique_clones):
+                        if dist_matrix[(i, j)] > max_d:
+                            max_d, seed1, seed2 = dist_matrix[(i, j)], i, j
+                            
+                selected_indices = [seed1, seed2]
+                unselected_indices = [i for i in range(num_unique_clones) if i not in selected_indices]
+                
+                # 迭代挑选剩余分子
+                while len(selected_indices) < target_n and unselected_indices:
+                    best_cand, max_of_mins = -1, -1
+                    for cand in unselected_indices:
+                        min_dist_to_sel = min([dist_matrix[(cand, sel)] for sel in selected_indices])
+                        if min_dist_to_sel > max_of_mins:
+                            max_of_mins, best_cand = min_dist_to_sel, cand
+                    selected_indices.append(best_cand)
+                    unselected_indices.remove(best_cand)
+                
+                df_diverse = df_paired_full.iloc[selected_indices][display_cols].copy()
+                df_diverse.insert(0, '建议优先级', [f"🥇 差异化 Top {i+1}" for i in range(len(df_diverse))])
+                df_diverse_final = df_diverse
+                
+                st.success(f"已为您锁定 {target_n} 个在全局序列空间中发散度最高的种子克隆：")
+                st.dataframe(df_diverse_final.style.apply(highlight_fv, axis=1), use_container_width=True)
+            else:
+                st.info("数据量不足以触发差异化聚类分析。")
+            
+            # Excel 打包下载 (修复版 openpyxl)
             if len(df_all) > 0:
                 output = io.BytesIO()
-                # 引擎替换为系统标配的 openpyxl，修复导出报错
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_all.to_excel(writer, index=False, sheet_name='完整单链数据')
                     
                     if df_cdr3_final is not None and not df_cdr3_final.empty:
                         df_cdr3_final.to_excel(writer, index=False, sheet_name='CDR3克隆聚类')
                         
-                    df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
+                    if df_paired_final is not None and not df_paired_final.empty:
+                        df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
+                        
+                    if df_diverse_final is not None and not df_diverse_final.empty:
+                        df_diverse_final.to_excel(writer, index=False, sheet_name='推荐纯化池')
                 
                 st.download_button(
-                    label="💾 下载完整生信分析报告 (Excel)",
+                    label="💾 下载多维度生信分析完整报告 (Excel)",
                     data=output.getvalue(),
-                    file_name="工业级抗体大屏分析报告_V16版.xlsx",
+                    file_name="工业级抗体大屏分析报告_V16_Final.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         else:
