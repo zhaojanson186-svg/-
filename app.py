@@ -65,7 +65,7 @@ def scan_ptm(sequence):
         return "无高危 PTM"
     
     findings = []
-    # 工业界常重点关注 CDR 区，这里我们进行全长扫描，但返回发生位置
+    # 工业界常重点关注 CDR 区，这里我们进行全长扫描，但返回大致发生位置
     for ptm_name, pattern in PTM_PATTERNS.items():
         for match in re.finditer(pattern, sequence):
             # 标记发生的大致位置
@@ -128,7 +128,7 @@ if st.session_state.analysis_started and fasta_input:
                 seq_id = row['ID']
                 seq = row['Sequence']
                 
-                # 精准识别链类型与数字后缀 (如 VH1, VL2)
+                # 精准识别链类型与数字后缀 (如 VH1, VL2) 解决多重轻链漏网问题
                 match = re.search(r"^(.*)[_ \-](VH|VL|VHH|LC|HC)(\d*)$", seq_id, re.IGNORECASE)
                 if match:
                     base_name = match.group(1).strip()
@@ -201,7 +201,7 @@ if st.session_state.analysis_started and fasta_input:
                     vh_candidates = df_vh[df_vh['分子基名'] == base].to_dict('records')
                     vl_candidates = df_vl[df_vl['分子基名'] == base].to_dict('records')
                     
-                    # 笛卡尔积：两两交叉组装
+                    # 笛卡尔积：两两交叉组装，解决1重对多轻的情况
                     for vh in vh_candidates:
                         for vl in vl_candidates:
                             vh_id = vh['序列ID']
@@ -316,6 +316,7 @@ if st.session_state.analysis_started and fasta_input:
                 
                 num_unique_clones = len(df_paired_full)
                 if num_unique_clones > 2:
+                    # 放宽挑选上限到 200
                     target_n = st.slider("请选择计划挑取进行下游验证的克隆数量：", 
                                          min_value=2, max_value=min(200, num_unique_clones), value=min(5, num_unique_clones))
                     
@@ -333,7 +334,7 @@ if st.session_state.analysis_started and fasta_input:
                             dist_matrix[(i, j)] = d
                             dist_matrix[(j, i)] = d
                             
-                    # 寻找种子起点
+                    # 寻找种子起点 (全网距离最远的两个基石)
                     max_d = -1
                     seed1, seed2 = 0, 1
                     for i in range(num_unique_clones):
@@ -345,7 +346,7 @@ if st.session_state.analysis_started and fasta_input:
                     selected_indices = [seed1, seed2]
                     unselected_indices = [i for i in range(num_unique_clones) if i not in selected_indices]
                     
-                    # Max-Min 迭代挑选
+                    # Max-Min 迭代挑选：寻找距离当前集合最远的补充节点
                     while len(selected_indices) < target_n and unselected_indices:
                         best_cand = -1
                         max_of_mins = -1
@@ -363,7 +364,7 @@ if st.session_state.analysis_started and fasta_input:
                     df_diverse.insert(0, '建议纯化优先级', [f"🥇 Top {i+1}" for i in range(len(df_diverse))])
                     df_diverse_final = df_diverse
                     
-                    st.success(f"挑选完成！基于全序列的系统性发散评估，为您锁定 {target_n} 个在序列空间上差异最大的克隆：")
+                    st.success(f"已为您锁定 {target_n} 个在全局序列空间中发散度最高的种子克隆：")
                     st.dataframe(df_diverse_final[['建议纯化优先级'] + display_cols].style.apply(highlight_fv, axis=1), use_container_width=True)
                 else:
                     st.info("独立克隆数量不足以触发多样性挑选。")
@@ -372,6 +373,7 @@ if st.session_state.analysis_started and fasta_input:
 
             if len(df_all) > 0:
                 output = io.BytesIO()
+                # 修复 ModuleNotFoundError，采用通用的 openpyxl 引擎
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_all.to_excel(writer, index=False, sheet_name='完整单链数据')
                     
@@ -388,7 +390,7 @@ if st.session_state.analysis_started and fasta_input:
                         df_export_diverse['轻链序列'] = df_diverse_final['_VL_Seq']
                         df_export_diverse.to_excel(writer, index=False, sheet_name='推荐纯化池')
                 
-                # 构建下载交互界面 (恢复清爽单按钮)
+                # 构建清爽的单一入口下载交互
                 st.markdown("---")
                 st.download_button(
                     label="💾 下载多维度生信分析报告 (已含推荐纯化池原始序列)",
