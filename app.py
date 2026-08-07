@@ -382,34 +382,18 @@ if st.session_state.analysis_started and fasta_input:
                         df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
                         
                     if df_diverse_final is not None and not df_diverse_final.empty:
-                        df_diverse_final[['建议纯化优先级'] + display_cols].to_excel(writer, index=False, sheet_name='推荐纯化池')
+                        # 在纯化池 Excel 报告中追加真实的重轻链序列，方便直接提交合成
+                        df_export_diverse = df_diverse_final[['建议纯化优先级'] + display_cols].copy()
+                        df_export_diverse['重链序列'] = df_diverse_final['_VH_Seq']
+                        df_export_diverse['轻链序列'] = df_diverse_final['_VL_Seq']
+                        df_export_diverse.to_excel(writer, index=False, sheet_name='推荐纯化池')
                 
-                # 构建下载交互界面
+                # 构建下载交互界面 (恢复清爽单按钮)
                 st.markdown("---")
-                col3, col4 = st.columns(2)
-                
-                with col3:
-                    st.download_button(
-                        label="💾 下载多维度生信分析报告 (Excel)",
-                        data=output.getvalue(),
-                        file_name="工业级抗体大屏分析报告_V16_Final.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                    
-                with col4:
-                    if df_diverse_final is not None and not df_diverse_final.empty:
-                        # 组装用于合成的清爽 FASTA 文本，利用隐藏的序列列
-                        fasta_content = ""
-                        for _, row in df_diverse_final.iterrows():
-                            # 格式化头文件，带上优先级防止混淆
-                            fasta_content += f">{row['_VH_ID']} | {row['代表分子名']} | {row['建议纯化优先级']}\n{row['_VH_Seq']}\n"
-                            fasta_content += f">{row['_VL_ID']} | {row['代表分子名']} | {row['建议纯化优先级']}\n{row['_VL_Seq']}\n"
-                        
-                        st.download_button(
-                            label="🧬 导出推荐纯化池序列 (FASTA直供合成)",
-                            data=fasta_content,
-                            file_name="Recommended_Synthesis_Clones.fasta",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
+                st.download_button(
+                    label="💾 下载多维度生信分析报告 (已含推荐纯化池原始序列)",
+                    data=output.getvalue(),
+                    file_name="工业级抗体大屏分析报告_V16_Final.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
