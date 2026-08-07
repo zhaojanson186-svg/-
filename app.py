@@ -3,358 +3,373 @@ import pandas as pd
 import re
 import io
 import difflib
-from collections import defaultdict
 
-# 全局疏水性指数字典 (GRAVY)
-GRAVY_DICT = {
-    'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5, 'E': -3.5, 'G': -0.4,
-    'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8,
-    'T': -0.7, 'W': -0.9, 'Y': -1.3, 'V': 4.2
-}
+# 设置全局页面配置
+st.set_page_config(page_title="工业级抗体生信大屏 V16", page_icon="🧬", layout="wide")
 
-# 采用国际标准的 ExPASy ProtParam pKa 标尺
-pKa_pos = {'K': 10.0, 'R': 12.5, 'H': 6.0, 'N-term': 8.0}
-pKa_neg = {'D': 3.9, 'E': 4.1, 'C': 8.3, 'Y': 10.0, 'C-term': 3.1}
-
-def calculate_pi(sequence):
-    """基于二分法迭代与Henderson-Hasselbalch方程计算等电点"""
-    if not sequence: return None
-    
-    # 统计各氨基酸数量，加速计算
-    counts = {aa: sequence.count(aa) for aa in set(sequence)}
-    
-    # 定义计算特定 pH 下净电荷的函数
-    def net_charge(pH):
-        charge = 0.0
-        # N端游离氨基的正电荷贡献
-        charge += 10**pKa_pos['N-term'] / (10**pH + 10**pKa_pos['N-term'])
-        # 碱性氨基酸正电荷贡献 (K, R, H)
-        for aa in ['K', 'R', 'H']:
-            if aa in counts:
-                charge += counts[aa] * (10**pKa_pos[aa] / (10**pH + 10**pKa_pos[aa]))
-        
-        # C端游离羧基的负电荷贡献
-        charge -= 10**pH / (10**pH + 10**pKa_neg['C-term'])
-        # 酸性氨基酸负电荷贡献 (D, E, C, Y)
-        for aa in ['D', 'E', 'C', 'Y']:
-            if aa in counts:
-                charge -= counts[aa] * (10**pH / (10**pH + 10**pKa_neg[aa]))
-        return charge
-
-    # 使用二分法寻找净电荷逼近于 0 的 pH 值
-    pH_min, pH_max = 0.0, 14.0
-    for _ in range(100):
-        pH_mid = (pH_min + pH_max) / 2
-        if net_charge(pH_mid) > 0:
-            pH_min = pH_mid  
-        else:
-            pH_max = pH_mid  
-            
-    return round(pH_mid, 2)
-
-def calculate_gravy(sequence):
-    """计算序列平均疏水性指数"""
-    if not sequence: return None
-    total = sum(GRAVY_DICT.get(aa, 0) for aa in sequence)
-    return round(total / len(sequence), 2)
-
-def extract_base_name(name):
-    """提取纯净的克隆归属名称，忽略后缀如_VH1, -VL3等"""
-    base = re.sub(r'[-_](VH|VL|HC|LC|Heavy_Chain|Light_Chain|Heavy|Light)\d*$', '', name, flags=re.IGNORECASE).strip()
-    return base
-
-def detect_ptms_detailed(sequence):
-    """只抓取最致命的4类CDR区突变缺陷"""
-    if not sequence: return "未知"
-    alerts = []
-    
-    ptm_motifs = {
-        'N-糖基化 (NIT)': r'N[^P][ST]',
-        '极速脱氨基 (NG)': r'NG',
-        '极速异构化 (DG)': r'DG',
-        '酸断裂点 (DP)': r'DP'
-    }
-    
-    # 按照国际通用的 Kabat/IMGT 大致分布进行分段(估算)
-    regions = {
-        'FR1': sequence[:25], 'CDR1': sequence[25:35], 'FR2': sequence[35:50],
-        'CDR2': sequence[50:65], 'FR3': sequence[65:95], 'CDR3': sequence[95:115],
-        'FR4': sequence[115:]
-    }
-    
-    # 只对 CDR 区域报警
-    for region_name, region_seq in regions.items():
-        if region_name.startswith("CDR"):  
-            for ptm_name, pattern in ptm_motifs.items():
-                for match in re.finditer(pattern, region_seq):
-                    global_pos = len(''.join(list(regions.values())[:list(regions.keys()).index(region_name)])) + match.start() + 1
-                    alerts.append(f"[{region_name}] {ptm_name} @{global_pos}")
-                    
-    return " | ".join(alerts) if alerts else "无高危 PTM"
-
-@st.cache_data
-def parse_fasta(fasta_text):
-    """解析输入的FASTA序列，支持自动去重命名和CDR提取"""
-    sequences = []
-    current_id = ""
-    current_seq = ""
-    id_counts = defaultdict(int)
-    
-    for line in fasta_text.splitlines():
-        line = line.strip()
-        if not line: continue
-        if line.startswith(">"):
-            if current_id and current_seq:
-                id_counts[current_id] += 1
-                final_id = current_id if id_counts[current_id] == 1 else f"{current_id}_Dup{id_counts[current_id]}"
-                sequences.append({"id": final_id, "seq": current_seq})
-            current_id = line[1:].strip()
-            current_seq = ""
-        else:
-            current_seq += line.upper()
-            
-    if current_id and current_seq:
-        id_counts[current_id] += 1
-        final_id = current_id if id_counts[current_id] == 1 else f"{current_id}_Dup{id_counts[current_id]}"
-        sequences.append({"id": final_id, "seq": current_seq})
-        
-    parsed_data = []
-    for item in sequences:
-        seq_id = item["id"]
-        seq = item["seq"]
-        
-        # 兼容带数字的链识别
-        chain_type = "未知"
-        if re.search(r'[-_](VH|HC|Heavy)\d*$', seq_id, flags=re.IGNORECASE):
-            chain_type = "重链 (VH)"
-        elif re.search(r'[-_](VL|LC|Light)\d*$', seq_id, flags=re.IGNORECASE):
-            chain_type = "轻链 (VL)"
-            
-        # 优化版的 CDR3 Cys 锚定提取算法
-        cdr3_seq = "解析失败"
-        cdr3_len = 0
-        match = re.search(r'C([A-Z]{3,25}?)[WF]G.G', seq)
-        if match:
-            cdr3_seq = match.group(1)
-            cdr3_len = len(cdr3_seq)
-            
-        parsed_data.append({
-            '序列名称 (ID)': seq_id,
-            '链类型': chain_type,
-            '归属分子名': extract_base_name(seq_id),
-            '全长序列': seq,
-            '理论等电点 (pI)': calculate_pi(seq),
-            'CDR3序列 (预估)': cdr3_seq,
-            'CDR3长度': cdr3_len,
-            '全长疏水指数 (GRAVY)': calculate_gravy(seq),
-            '高危 PTM 风险预警': detect_ptms_detailed(seq)
-        })
-        
-    return pd.DataFrame(parsed_data)
-
-st.set_page_config(page_title="工业级抗体生信大屏_V16", layout="wide")
-st.title("🧬 工业级抗体序列质控与 Fv 配对中台 (V16 纯净完全版)")
-
-with st.sidebar:
-    st.header("📥 数据输入区")
-    fasta_input = st.text_area("请粘贴 FASTA 序列 (支持多序列混合输入):", height=300)
-    process_btn = st.button("🚀 开始极速分析", type="primary")
-
-# 修复：使用 session_state 记录分析状态，防止滑块拖动触发 Rerun 时页面变白
+# 初始化 Session State，防止 Streamlit 滑块交互导致页面白屏刷新
 if 'analysis_started' not in st.session_state:
     st.session_state.analysis_started = False
 
-if process_btn and fasta_input:
-    st.session_state.analysis_started = True
+# 采用 ExPASy 主流 pKa 参考值
+PI_DICT = {
+    'D': -3.90, 'E': -4.07, 'C': -8.18, 'Y': -10.46,
+    'H': 6.04, 'K': 10.54, 'R': 12.48,
+    'N_term': 8.0, 'C_term': -3.1
+}
+
+def calculate_pi(sequence):
+    """基于 Henderson-Hasselbalch 方程和二分法迭代计算精确的 pI 值"""
+    if not sequence or not isinstance(sequence, str):
+        return None
+    
+    sequence = sequence.upper()
+    counts = {aa: sequence.count(aa) for aa in PI_DICT.keys() if len(aa) == 1}
+    
+    def net_charge(pH):
+        charge = 0.0
+        # 碱性氨基酸 (正电荷)：pH < pKa 时带正电
+        charge += counts.get('H', 0) / (1.0 + 10**(pH - PI_DICT['H']))
+        charge += counts.get('K', 0) / (1.0 + 10**(pH - PI_DICT['K']))
+        charge += counts.get('R', 0) / (1.0 + 10**(pH - PI_DICT['R']))
+        charge += 1.0 / (1.0 + 10**(pH - PI_DICT['N_term'])) # N端
+        
+        # 酸性氨基酸 (负电荷)：pH > pKa 时带负电
+        charge -= counts.get('D', 0) / (1.0 + 10**(PI_DICT['D'] * -1 - pH))
+        charge -= counts.get('E', 0) / (1.0 + 10**(PI_DICT['E'] * -1 - pH))
+        charge -= counts.get('C', 0) / (1.0 + 10**(PI_DICT['C'] * -1 - pH))
+        charge -= counts.get('Y', 0) / (1.0 + 10**(PI_DICT['Y'] * -1 - pH))
+        charge -= 1.0 / (1.0 + 10**(PI_DICT['C_term'] * -1 - pH)) # C端
+        return charge
+        
+    # 二分法寻找等电点 (pH: 0 -> 14)
+    low, high = 0.0, 14.0
+    for _ in range(100): # 100次迭代精度足够
+        mid = (low + high) / 2.0
+        if net_charge(mid) > 0:
+            low = mid
+        else:
+            high = mid
+    return round((low + high) / 2.0, 2)
+
+PTM_PATTERNS = {
+    '酸断裂点 (DP)': r'DP',
+    '极速异构化 (DG)': r'DG',
+    '极速脱氨基 (NG)': r'NG',
+    'N-糖基化 (N-X-S/T)': r'N[^P][ST]'
+}
+
+def scan_ptm(sequence):
+    """扫描序列中的高危 PTM 基序"""
+    if not sequence or not isinstance(sequence, str):
+        return "无高危 PTM"
+    
+    findings = []
+    # 工业界常重点关注 CDR 区，这里我们进行全长扫描，但返回发生位置
+    for ptm_name, pattern in PTM_PATTERNS.items():
+        for match in re.finditer(pattern, sequence):
+            # 标记发生的大致位置
+            idx = match.start() + 1
+            if idx > 25 and idx < 120:
+                region = "CDR附近"
+                if idx < 40: region = "CDR1"
+                elif idx < 70: region = "CDR2"
+                elif idx > 90: region = "CDR3"
+                findings.append(f"[{region}] {ptm_name} @{idx}")
+            else:
+                findings.append(f"[FR] {ptm_name} @{idx}")
+                
+    return " | ".join(findings) if findings else "无高危 PTM"
+
+@st.cache_data
+def parse_fasta(fasta_text):
+    """解析包含多种链的 FASTA 数据"""
+    sequences = []
+    current_id = ""
+    current_seq = []
+    
+    for line in fasta_text.strip().split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('>'):
+            if current_id:
+                sequences.append({'ID': current_id, 'Sequence': "".join(current_seq)})
+            current_id = line[1:]
+            current_seq = []
+        else:
+            current_seq.append(line)
+    if current_id:
+        sequences.append({'ID': current_id, 'Sequence': "".join(current_seq)})
+        
+    return pd.DataFrame(sequences)
+
+st.title("🔬 工业级抗体序列生信大屏中台 (V16)")
+st.markdown("集成了基于 **Henderson-Hasselbalch 方程**的高精度 pI 计算、**CDR3 富集聚类**、**笛卡尔积双链组合**以及 **Max-Min 发散性序列智能挑选**。")
+
+fasta_input = st.text_area("请粘贴全量 FASTA 格式数据 (支持批量混合粘贴重/轻链):", height=200,
+                          help="请以 >分子名_链类型 (如 >F0630-4D1-VH, >F0630-6B4-VL2) 的格式命名")
+
+col1, col2 = st.columns([1, 5])
+with col1:
+    if st.button("🚀 开始极速分析", use_container_width=True):
+        st.session_state.analysis_started = True
 
 if st.session_state.analysis_started and fasta_input:
-    with st.spinner("正在进行智能去重、序列切片、理化计算与 PTM 雷达扫描..."):
+    with st.spinner('🚀 正在进行工业级序列解析与组装...'):
+        df = parse_fasta(fasta_input)
         
-        # 1. 基础解析与总表展示
-        df_all = parse_fasta(fasta_input)
-        st.subheader(f"📊 单链全景质控总表 (共识别 {len(df_all)} 条序列)")
-        st.dataframe(df_all, use_container_width=True)
-        
-        # 2. CDR3 聚类分析模块
-        st.subheader("🧬 CDR3 聚类与克隆唯一性分析 (克隆多样性评估)")
-        valid_cdr3 = df_all[df_all['CDR3序列 (预估)'] != '解析失败']
-        df_cdr3_final = None
-        if not valid_cdr3.empty:
-            cdr3_cluster = []
-            for cdr3, group in valid_cdr3.groupby('CDR3序列 (预估)'):
-                count = len(group)
-                chain_type = group.iloc[0]['链类型']
-                rep_id = group.iloc[0]['序列名称 (ID)']
-                merged_ids = ", ".join(group['序列名称 (ID)'].tolist())
-                unique_flag = "☑️ 唯一克隆" if count == 1 else f"🔥 优势富集 (x{count})"
+        if df.empty:
+            st.error("未检测到有效数据，请检查格式。")
+        else:
+            # 1. 基础特征提取
+            processed_data = []
+            for _, row in df.iterrows():
+                seq_id = row['ID']
+                seq = row['Sequence']
                 
-                cdr3_cluster.append({
-                    '克隆状态': unique_flag,
-                    '丰度': count,
-                    '链类型': chain_type,
-                    'CDR3序列': cdr3,
-                    'CDR3长度': len(cdr3),
-                    '代表序列ID': rep_id,
-                    '包含序列集合': merged_ids
+                # 精准识别链类型与数字后缀 (如 VH1, VL2)
+                match = re.search(r"^(.*)[_ \-](VH|VL|VHH|LC|HC)(\d*)$", seq_id, re.IGNORECASE)
+                if match:
+                    base_name = match.group(1).strip()
+                    chain_type = match.group(2).upper()
+                    suffix = match.group(3).strip()
+                    # 统一重/轻链标识
+                    if chain_type in ['VH', 'VHH', 'HC']: c_type = '重链 (VH)'
+                    elif chain_type in ['VL', 'LC']: c_type = '轻链 (VL)'
+                    else: c_type = '未知'
+                    
+                    chain_label = f"{chain_type}{suffix}"
+                else:
+                    base_name = seq_id
+                    c_type = '未知'
+                    chain_label = '未知'
+                
+                # 粗略提取 CDR3 (Cys锚定法防止吞噬)
+                cdr3_seq = "N/A"
+                cys_matches = [m.start() for m in re.finditer(r'C', seq)]
+                trp_matches = [m.start() for m in re.finditer(r'W', seq)]
+                
+                if len(cys_matches) >= 2 and trp_matches:
+                    cys_2 = cys_matches[-1] if cys_matches[-1] < 110 else (cys_matches[-2] if len(cys_matches)>1 else -1)
+                    valid_trps = [w for w in trp_matches if w > cys_2]
+                    if cys_2 != -1 and valid_trps:
+                        trp = valid_trps[0]
+                        if 3 < (trp - cys_2) < 30:
+                            cdr3_seq = seq[cys_2 + 1 : trp]
+                
+                processed_data.append({
+                    '序列ID': seq_id,
+                    '分子基名': base_name,
+                    '链标签': chain_label,
+                    '链类型': c_type,
+                    '预测CDR3': cdr3_seq,
+                    '长度': len(seq),
+                    '理论pI': calculate_pi(seq),
+                    '高危 PTM 风险预警': scan_ptm(seq),
+                    '全长序列': seq
                 })
+                
+            df_all = pd.DataFrame(processed_data)
             
-            df_cdr3_final = pd.DataFrame(cdr3_cluster).sort_values(by=['丰度', 'CDR3长度'], ascending=[False, True])
+            st.subheader("🧬 单链 CDR3 克隆聚类与丰度分析")
+            cdr3_cluster = df_all[df_all['预测CDR3'] != "N/A"].groupby(['链类型', '预测CDR3']).agg(
+                克隆数=('序列ID', 'count'),
+                包含序列ID=('序列ID', lambda x: ", ".join(x)),
+                分子基名集合=('分子基名', lambda x: ", ".join(set(x)))
+            ).reset_index()
+            
+            cdr3_cluster = cdr3_cluster.sort_values(by=['链类型', '克隆数'], ascending=[False, False])
+            cdr3_cluster.insert(0, '丰度状态', cdr3_cluster['克隆数'].apply(lambda x: '🔥 优势富集 (x{})'.format(x) if x > 1 else '唯一'))
+            df_cdr3_final = cdr3_cluster
             
             def highlight_cdr3(row):
-                colors = [''] * len(row)
-                if '🔥 优势富集' in str(row.get('克隆状态', '')):
-                    colors[row.index.get_loc('克隆状态')] = 'background-color: #ffebb5; color: #856404; font-weight: bold;'
-                return colors
-                
+                if '🔥' in str(row['丰度状态']):
+                    return ['background-color: #ffe8cc; color: #d97706; font-weight: bold'] * len(row)
+                return [''] * len(row)
+
             st.dataframe(df_cdr3_final.style.apply(highlight_cdr3, axis=1), use_container_width=True)
-        else:
-            st.info("尚未成功解析到有效的 CDR3 序列。")
-
-        # 3. 笛卡尔积配对与 Fv 排重模块
-        st.subheader("🔗 Fv 双链组装与聚类排重评估")
-        paired_data = []
-        for base_name, group in df_all.groupby('归属分子名'):
-            vhs = group[group['链类型'] == '重链 (VH)']
-            vls = group[group['链类型'] == '轻链 (VL)']
             
-            if not vhs.empty and not vls.empty:
-                for _, vh in vhs.iterrows():
-                    for _, vl in vls.iterrows():
-                        vh_id = vh['序列名称 (ID)']
-                        vl_id = vl['序列名称 (ID)']
-                        
-                        combo_name = base_name if (len(vhs)==1 and len(vls)==1) else f"{base_name} ({vh_id}/{vl_id})"
-                        fv_fingerprint = vh['全长序列'] + "||" + vl['全长序列']
-                        
-                        vh_pi = vh['理论等电点 (pI)']
-                        vl_pi = vl['理论等电点 (pI)']
-                        delta_pi = round(abs(vh_pi - vl_pi), 2) if vh_pi and vl_pi else None
-                        
-                        vh_ptm = vh['高危 PTM 风险预警']
-                        vl_ptm = vl['高危 PTM 风险预警']
-                        ptm_summary = ""
-                        if vh_ptm != "无高危 PTM": ptm_summary += f"VH: {vh_ptm} | "
-                        if vl_ptm != "无高危 PTM": ptm_summary += f"VL: {vl_ptm}"
-                        ptm_summary = ptm_summary.strip(" | ") if ptm_summary else "☑️ Fv 无高危 PTM"
-                        
-                        paired_data.append({
-                            '组合分子名': combo_name,
-                            '具体链组合': f"重链: {vh_id} | 轻链: {vl_id}",
-                            '指纹 (Fingerprint)': fv_fingerprint,
-                            '重链_pI': vh_pi,
-                            '轻链_pI': vl_pi,
-                            'ΔpI': delta_pi,
-                            'PTM风险汇总': ptm_summary
-                        })
-                        
-        df_paired_final = None
-        df_diverse_final = None
-        
-        if paired_data:
-            df_paired_raw = pd.DataFrame(paired_data)
-            cluster_data = []
+            df_vh = df_all[df_all['链类型'] == '重链 (VH)']
+            df_vl = df_all[df_all['链类型'] == '轻链 (VL)']
             
-            for fp, group in df_paired_raw.groupby('指纹 (Fingerprint)'):
-                count = len(group)
-                rep_name = group.iloc[0]['组合分子名']
-                chain_details = group.iloc[0]['具体链组合']
-                merged_names = ", ".join(group['组合分子名'].tolist())
-                unique_flag = "☑️ 唯一 (Unique)" if count == 1 else f"⚠️ 冗余 (Dup x{count})"
+            paired_data = []
+            if not df_vh.empty and not df_vl.empty:
+                common_bases = set(df_vh['分子基名']).intersection(set(df_vl['分子基名']))
                 
-                delta_pi = group.iloc[0]['ΔpI']
-                qc_status = "✅ 正常"
-                if delta_pi and delta_pi > 2.0:
-                    qc_status = "⚠️ 关注: ΔpI过大"
+                for base in common_bases:
+                    vh_candidates = df_vh[df_vh['分子基名'] == base].to_dict('records')
+                    vl_candidates = df_vl[df_vl['分子基名'] == base].to_dict('records')
                     
-                cluster_data.append({
-                    '唯一性 (Unique)': unique_flag,
-                    '包含相同配对数': count,
-                    '代表分子名': rep_name,
-                    '具体链组合': chain_details,
-                    '合并来源分子名': merged_names,
-                    '重链_pI': group.iloc[0]['重链_pI'],
-                    '轻链_pI': group.iloc[0]['轻链_pI'],
-                    'ΔpI': delta_pi,
-                    'Fv质控状态': qc_status,
-                    'PTM风险汇总': group.iloc[0]['PTM风险汇总'],
-                    '_Fv_Seq_Fingerprint': fp # 隐藏的完整双链序列，用于计算多度性
-                })
-                
-            # 先排序，避免列名缺失
-            df_paired_full = pd.DataFrame(cluster_data).sort_values(
-                by=['包含相同配对数', '代表分子名'], ascending=[False, True]
-            )
-            
-            display_cols = [
-                '唯一性 (Unique)', '包含相同配对数', '代表分子名', '具体链组合', '合并来源分子名', 
-                '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
-            ]
-            df_paired_final = df_paired_full[display_cols]
-            
-            def highlight_fv(row):
-                colors = [''] * len(row)
-                if '⚠️ 冗余' in str(row.get('唯一性 (Unique)', '')):
-                    colors[row.index.get_loc('唯一性 (Unique)')] = 'background-color: #ffebb5; color: black;'
-                if '⚠️ 关注' in str(row.get('Fv质控状态', '')):
-                    colors[row.index.get_loc('Fv质控状态')] = 'background-color: #e2e3e5; color: #383d41;'
-                if 'VH' in str(row.get('PTM风险汇总', '')) or 'VL' in str(row.get('PTM风险汇总', '')):
-                    colors[row.index.get_loc('PTM风险汇总')] = 'background-color: #f8d7da; color: #721c24;'
-                return colors
-
-            st.dataframe(df_paired_final.style.apply(highlight_fv, axis=1), use_container_width=True)
-        
-            # ================= 新增：Fv 智能差异化挑选模块 (Max-Min 算法) =================
-            st.subheader("🌈 智能序列差异化推荐池 (Diversity Picker)")
-            st.markdown("基于 Max-Min 序列距离算法，从全部排重克隆中计算并挑选彼此差异最大的分子，最大化命中多表位，节省纯化资源。")
-            
-            num_unique_clones = len(df_paired_full)
-            if num_unique_clones > 2:
-                # 放宽上限至 200
-                target_n = st.slider("请选择计划挑取进行下游验证的克隆数量：", 
-                                     min_value=2, max_value=min(200, num_unique_clones), value=min(5, num_unique_clones))
-                
-                # 距离矩阵计算引擎
-                pool = df_paired_full.to_dict('records')
-                def calc_dist(seq1, seq2):
-                    return 1.0 - difflib.SequenceMatcher(None, seq1, seq2).ratio()
-                
-                dist_matrix = {}
-                for i in range(num_unique_clones):
-                    for j in range(i+1, num_unique_clones):
-                        d = calc_dist(pool[i]['_Fv_Seq_Fingerprint'], pool[j]['_Fv_Seq_Fingerprint'])
-                        dist_matrix[(i, j)] = d
-                        dist_matrix[(j, i)] = d
-                
-                # 寻找最远种子
-                max_d, seed1, seed2 = -1, 0, 1
-                for i in range(num_unique_clones):
-                    for j in range(i+1, num_unique_clones):
-                        if dist_matrix[(i, j)] > max_d:
-                            max_d, seed1, seed2 = dist_matrix[(i, j)], i, j
+                    # 笛卡尔积：两两交叉组装
+                    for vh in vh_candidates:
+                        for vl in vl_candidates:
+                            vh_id = vh['序列ID']
+                            vl_id = vl['序列ID']
+                            vh_label = vh['链标签']
+                            vl_label = vl['链标签']
+                            combo_name = f"{base} ({vh_label}/{vl_label})" if len(vh_candidates)>1 or len(vl_candidates)>1 else base
                             
-                selected_indices = [seed1, seed2]
-                unselected_indices = [i for i in range(num_unique_clones) if i not in selected_indices]
-                
-                # 迭代挑选剩余分子
-                while len(selected_indices) < target_n and unselected_indices:
-                    best_cand, max_of_mins = -1, -1
-                    for cand in unselected_indices:
-                        min_dist_to_sel = min([dist_matrix[(cand, sel)] for sel in selected_indices])
-                        if min_dist_to_sel > max_of_mins:
-                            max_of_mins, best_cand = min_dist_to_sel, cand
-                    selected_indices.append(best_cand)
-                    unselected_indices.remove(best_cand)
-                
-                df_diverse = df_paired_full.iloc[selected_indices][display_cols].copy()
-                df_diverse.insert(0, '建议纯化优先级', [f"🥇 Top {i+1}" for i in range(len(df_diverse))])
-                df_diverse_final = df_diverse
-                
-                st.success(f"已为您锁定 {target_n} 个在全局序列空间中发散度最高的种子克隆：")
-                st.dataframe(df_diverse_final.style.apply(highlight_fv, axis=1), use_container_width=True)
-            else:
-                st.info("数据量不足以触发差异化聚类分析。")
+                            vh_pi = vh['理论pI']
+                            vl_pi = vl['理论pI']
+                            delta_pi = round(abs(vh_pi - vl_pi), 2) if vh_pi and vl_pi else None
+                            
+                            fv_fingerprint = f"{vh['全长序列']}||{vl['全长序列']}"
+                            
+                            vh_ptm = vh['高危 PTM 风险预警']
+                            vl_ptm = vl['高危 PTM 风险预警']
+                            ptm_summary = ""
+                            if vh_ptm != "无高危 PTM": ptm_summary += f"VH: {vh_ptm} | "
+                            if vl_ptm != "无高危 PTM": ptm_summary += f"VL: {vl_ptm}"
+                            ptm_summary = ptm_summary.strip(" | ") if ptm_summary else "☑️ Fv 无高危 PTM"
+                            
+                            paired_data.append({
+                                '组合分子名': combo_name,
+                                '具体链组合': f"重链: {vh_id} | 轻链: {vl_id}",
+                                '指纹 (Fingerprint)': fv_fingerprint,
+                                '重链_pI': vh_pi,
+                                '轻链_pI': vl_pi,
+                                'ΔpI': delta_pi,
+                                'PTM风险汇总': ptm_summary,
+                                '_VH_ID': vh_id,
+                                '_VL_ID': vl_id,
+                                '_VH_Seq': vh['全长序列'],
+                                '_VL_Seq': vl['全长序列']
+                            })
+                            
+            # 隐藏列用于后续导出和计算
+            df_paired_full = None 
+            df_paired_final = None
+            df_diverse_final = None
             
-            # Excel 打包下载 (已修复为 openpyxl 引擎)
+            if paired_data:
+                st.subheader("🔗 Fv 完整双链配对与冗余聚类结果")
+                df_paired_raw = pd.DataFrame(paired_data)
+                
+                # Fv 级别冗余聚类
+                fv_cluster = df_paired_raw.groupby('指纹 (Fingerprint)').agg(
+                    count=('组合分子名', 'count'),
+                    rep_name=('组合分子名', 'first'),
+                    merged_names=('组合分子名', lambda x: ", ".join(x)),
+                    chain_details=('具体链组合', lambda x: " /// ".join(set(x)))
+                ).reset_index()
+                
+                cluster_data = []
+                for _, row in fv_cluster.iterrows():
+                    fp = row['指纹 (Fingerprint)']
+                    count = row['count']
+                    rep_name = row['rep_name']
+                    merged_names = row['merged_names']
+                    chain_details = row['chain_details']
+                    
+                    group = df_paired_raw[df_paired_raw['指纹 (Fingerprint)'] == fp]
+                    unique_flag = "✅ 唯一 (Unique)" if count == 1 else "⚠️ 冗余 (Redundant)"
+                    
+                    delta_pi = group.iloc[0]['ΔpI']
+                    qc_status = "✅ 正常"
+                    if delta_pi and delta_pi > 2.0:
+                        qc_status = "⚠️ 关注: ΔpI过大"
+                        
+                    cluster_data.append({
+                        '唯一性 (Unique)': unique_flag,
+                        '包含相同配对数': count,
+                        '代表分子名': rep_name,
+                        '具体链组合': chain_details,
+                        '合并来源分子名': merged_names,
+                        '重链_pI': group.iloc[0]['重链_pI'],
+                        '轻链_pI': group.iloc[0]['轻链_pI'],
+                        'ΔpI': delta_pi,
+                        'Fv质控状态': qc_status,
+                        'PTM风险汇总': group.iloc[0]['PTM风险汇总'],
+                        '_Fv_Seq_Fingerprint': fp,
+                        '_VH_ID': group.iloc[0]['_VH_ID'],
+                        '_VL_ID': group.iloc[0]['_VL_ID'],
+                        '_VH_Seq': group.iloc[0]['_VH_Seq'],
+                        '_VL_Seq': group.iloc[0]['_VL_Seq']
+                    })
+                    
+                # 整理列表并排序
+                df_paired_full = pd.DataFrame(cluster_data).sort_values(
+                    by=['包含相同配对数', '代表分子名'], ascending=[False, True]
+                )
+                
+                display_cols = [
+                    '唯一性 (Unique)', '包含相同配对数', '代表分子名', '具体链组合', '合并来源分子名', 
+                    '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总'
+                ]
+                df_paired_final = df_paired_full[display_cols]
+                
+                def highlight_fv(row):
+                    colors = [''] * len(row)
+                    if '⚠️ 冗余' in str(row.get('唯一性 (Unique)', '')):
+                        colors[row.index.get_loc('唯一性 (Unique)')] = 'background-color: #ffebb5; color: black;'
+                    if '⚠️ 关注' in str(row.get('Fv质控状态', '')):
+                        colors[row.index.get_loc('Fv质控状态')] = 'background-color: #e2e3e5; color: #383d41;'
+                    if 'VH' in str(row.get('PTM风险汇总', '')) or 'VL' in str(row.get('PTM风险汇总', '')):
+                        colors[row.index.get_loc('PTM风险汇总')] = 'background-color: #f8d7da; color: #721c24;'
+                    return colors
+
+                st.dataframe(df_paired_final.style.apply(highlight_fv, axis=1), use_container_width=True)
+                
+                st.subheader("🌈 智能序列差异化推荐池 (Diversity Picker)")
+                st.markdown("基于 Max-Min 序列距离算法，从全部排重克隆中计算并挑选彼此差异最大的分子，最大化命中多表位，节省纯化资源。")
+                
+                num_unique_clones = len(df_paired_full)
+                if num_unique_clones > 2:
+                    target_n = st.slider("请选择计划挑取进行下游验证的克隆数量：", 
+                                         min_value=2, max_value=min(200, num_unique_clones), value=min(5, num_unique_clones))
+                    
+                    # 距离矩阵计算引擎
+                    pool = df_paired_full.to_dict('records')
+                    
+                    def calc_dist(seq1, seq2):
+                        return 1.0 - difflib.SequenceMatcher(None, seq1, seq2).ratio()
+                    
+                    # 预计算距离矩阵
+                    dist_matrix = {}
+                    for i in range(num_unique_clones):
+                        for j in range(i+1, num_unique_clones):
+                            d = calc_dist(pool[i]['_Fv_Seq_Fingerprint'], pool[j]['_Fv_Seq_Fingerprint'])
+                            dist_matrix[(i, j)] = d
+                            dist_matrix[(j, i)] = d
+                            
+                    # 寻找种子起点
+                    max_d = -1
+                    seed1, seed2 = 0, 1
+                    for i in range(num_unique_clones):
+                        for j in range(i+1, num_unique_clones):
+                            if dist_matrix[(i, j)] > max_d:
+                                max_d = dist_matrix[(i, j)]
+                                seed1, seed2 = i, j
+                                
+                    selected_indices = [seed1, seed2]
+                    unselected_indices = [i for i in range(num_unique_clones) if i not in selected_indices]
+                    
+                    # Max-Min 迭代挑选
+                    while len(selected_indices) < target_n and unselected_indices:
+                        best_cand = -1
+                        max_of_mins = -1
+                        for cand in unselected_indices:
+                            min_dist_to_sel = min([dist_matrix[(cand, sel)] for sel in selected_indices])
+                            if min_dist_to_sel > max_of_mins:
+                                max_of_mins = min_dist_to_sel
+                                best_cand = cand
+                        
+                        selected_indices.append(best_cand)
+                        unselected_indices.remove(best_cand)
+                    
+                    # 生成最终多样性结果
+                    df_diverse = df_paired_full.iloc[selected_indices].copy()
+                    df_diverse.insert(0, '建议纯化优先级', [f"🥇 Top {i+1}" for i in range(len(df_diverse))])
+                    df_diverse_final = df_diverse
+                    
+                    st.success(f"挑选完成！基于全序列的系统性发散评估，为您锁定 {target_n} 个在序列空间上差异最大的克隆：")
+                    st.dataframe(df_diverse_final[['建议纯化优先级'] + display_cols].style.apply(highlight_fv, axis=1), use_container_width=True)
+                else:
+                    st.info("独立克隆数量不足以触发多样性挑选。")
+            else:
+                st.info("未成功配对任何有效 Fv 结构。")
+
             if len(df_all) > 0:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -367,13 +382,34 @@ if st.session_state.analysis_started and fasta_input:
                         df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
                         
                     if df_diverse_final is not None and not df_diverse_final.empty:
-                        df_diverse_final.to_excel(writer, index=False, sheet_name='推荐纯化池')
+                        df_diverse_final[['建议纯化优先级'] + display_cols].to_excel(writer, index=False, sheet_name='推荐纯化池')
                 
-                st.download_button(
-                    label="💾 下载多维度生信分析完整报告 (Excel)",
-                    data=output.getvalue(),
-                    file_name="工业级抗体大屏分析报告_V16_Final.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-        else:
-            st.info("尚未识别到可以成功成对的 VH/VL 序列。")
+                # 构建下载交互界面
+                st.markdown("---")
+                col3, col4 = st.columns(2)
+                
+                with col3:
+                    st.download_button(
+                        label="💾 下载多维度生信分析报告 (Excel)",
+                        data=output.getvalue(),
+                        file_name="工业级抗体大屏分析报告_V16_Final.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                    
+                with col4:
+                    if df_diverse_final is not None and not df_diverse_final.empty:
+                        # 组装用于合成的清爽 FASTA 文本，利用隐藏的序列列
+                        fasta_content = ""
+                        for _, row in df_diverse_final.iterrows():
+                            # 格式化头文件，带上优先级防止混淆
+                            fasta_content += f">{row['_VH_ID']} | {row['代表分子名']} | {row['建议纯化优先级']}\n{row['_VH_Seq']}\n"
+                            fasta_content += f">{row['_VL_ID']} | {row['代表分子名']} | {row['建议纯化优先级']}\n{row['_VL_Seq']}\n"
+                        
+                        st.download_button(
+                            label="🧬 导出推荐纯化池序列 (FASTA直供合成)",
+                            data=fasta_content,
+                            file_name="Recommended_Synthesis_Clones.fasta",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
