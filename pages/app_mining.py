@@ -5,139 +5,171 @@ import io
 import re
 
 # 页面配置
-st.set_page_config(page_title="抗体同源序列智能挖掘系统", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="抗体同源挖掘 | 聚焦 CDR", page_icon="🧬", layout="wide")
 
 # ================= 核心算法模块 =================
 @st.cache_data
 def parse_fasta(fasta_text):
-    """解析 FASTA 格式数据"""
     sequences = {}
     current_name = ""
     current_seq = []
     
     for line in fasta_text.splitlines():
         line = line.strip()
-        if not line:
-            continue
+        if not line: continue
         if line.startswith(">"):
             if current_name:
                 sequences[current_name] = "".join(current_seq).replace(" ", "").upper()
             current_name = line[1:].strip()
             current_seq = []
         else:
-            # 移除非字母字符（如数字、空格）
             clean_line = re.sub(r'[^A-Za-z]', '', line)
             current_seq.append(clean_line)
             
     if current_name:
         sequences[current_name] = "".join(current_seq).replace(" ", "").upper()
-        
     return sequences
 
-def calculate_similarity(seq1, seq2):
-    """计算两条序列的相似度和氨基酸差异数"""
+def levenshtein_distance(s1, s2):
+    """计算精准的氨基酸编辑距离（支持突变、插入、缺失）"""
+    if len(s1) > len(s2):
+        s1, s2 = s2, s1
+    distances = range(len(s1) + 1)
+    for index2, char2 in enumerate(s2):
+        new_distances = [index2 + 1]
+        for index1, char1 in enumerate(s1):
+            if char1 == char2:
+                new_distances.append(distances[index1])
+            else:
+                new_distances.append(1 + min((distances[index1], distances[index1+1], new_distances[-1])))
+        distances = new_distances
+    return distances[-1]
+
+def scan_motif_in_sequence(motif, full_seq):
+    """滑动窗口局部雷达扫描（专门用于在全长序列中寻找特定的 CDR 变体）"""
+    m_len = len(motif)
+    s_len = len(full_seq)
+    
+    # 极速匹配
+    if motif in full_seq:
+        return 100.0, 0, motif
+        
+    best_dist = m_len
+    best_match = ""
+    
+    # 允许长度发生 +/- 2 的插入或缺失 (Indels)
+    for w in range(max(1, m_len - 2), min(s_len + 1, m_len + 3)):
+        for i in range(s_len - w + 1):
+            window = full_seq[i:i+w]
+            dist = levenshtein_distance(motif, window)
+            if dist < best_dist:
+                best_dist = dist
+                best_match = window
+                
+    sim = max(0.0, ((m_len - best_dist) / m_len) * 100)
+    return sim, best_dist, best_match
+
+def calculate_global_similarity(seq1, seq2):
+    """传统的全局相似度（包含骨架）"""
     matcher = difflib.SequenceMatcher(None, seq1, seq2)
     identity = matcher.ratio()
-    
-    # 粗略计算突变数（基于比对块）
     match_len = sum(triple.size for triple in matcher.get_matching_blocks())
     mutations = max(len(seq1), len(seq2)) - match_len
-    
-    return identity, mutations
+    return identity * 100, mutations
 
 # ================= 侧边栏 UI =================
 with st.sidebar:
-    st.header("⚙️ 挖掘参数设置")
-    sim_threshold = st.slider("最低同源相似度阈值 (%)", min_value=50.0, max_value=99.9, value=85.0, step=0.5, 
-                              help="低于此相似度的序列将被系统自动过滤")
-    top_k = st.number_input("每个种子最多保留的相似克隆数", min_value=1, max_value=500, value=50)
+    st.header("⚙️ 挖掘引擎设置")
+    
+    mode = st.radio(
+        "选择比对策略：",
+        ["🎯 CDR/局部基序扫描 (推荐)", "🌍 全局全长比对"]
+    )
     
     st.markdown("---")
-    st.markdown("### 💡 挖掘策略建议")
-    st.markdown("- **85% - 95%**：寻找可能有显著亲和力提升的家族变体。\n- **> 95%**：通常是单点或双点突变，常用于寻找去除 PTM 风险的天然备用分子。")
+    if "CDR" in mode:
+        st.info("当前模式：**无视骨架差异**，专门在库中搜寻与种子 CDR 高度相似的片段，极其适合为人源化做储备。")
+        sim_threshold = st.slider("最低 CDR 相似度阈值 (%)", 50.0, 99.9, 80.0, 1.0)
+    else:
+        st.info("当前模式：对比整条序列（包含 FR 区），适合寻找完全属于同一个大克隆家族的兄弟分子。")
+        sim_threshold = st.slider("最低全局相似度阈值 (%)", 50.0, 99.9, 85.0, 1.0)
+
+    top_k = st.number_input("每个种子最多保留命中数", min_value=1, max_value=500, value=50)
 
 # ================= 主界面 =================
-st.title("🧬 抗体同源序列智能挖掘引擎 (Homology Miner)")
-st.markdown("输入您的**优选种子克隆**，系统将从海量**候选序列库**中，为您深挖具有高同源性的潜在优秀变体分子。")
+st.title("🧬 抗体同源挖掘引擎 | 深度定制作战版")
 
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("🥇 第一步：输入优选分子 (Seed Clones)")
-    seed_input = st.text_area("请在此粘贴优选分子的 FASTA 序列（支持输入多条）：", height=200, 
-                              placeholder=">Seed_Clone_1\nEVQLVQSGAEVKKPGASVKVSCKASGYTFT...\n>Seed_Clone_2\nDIQMTQSPSSLSASVGDRVTITCRASQ...")
+    if "CDR" in mode:
+        st.subheader("🥇 第一步：输入种子 CDR (Motif)")
+        seed_input = st.text_area("请提取优选分子的 CDR 序列（如仅输入 CDR3，或连写的 CDR123）：", height=200, 
+                                  placeholder=">Seed_1_CDRH3\nARQGYGMDVW\n>Seed_2_CDRH123\nGFNIKDTY-RIDPANGN-YYGMDY")
+    else:
+        st.subheader("🥇 第一步：输入优选分子 (全长)")
+        seed_input = st.text_area("请在此粘贴优选分子的完整 FASTA 序列：", height=200, 
+                                  placeholder=">Seed_Clone_1\nEVQLVQSGAEVKKPGASVKVSCKASGYTFT...")
 
 with col2:
-    st.subheader("📚 第二步：输入候选序列库 (Database)")
-    lib_input = st.text_area("请在此粘贴海量候选库的 FASTA 序列（将被用于遍历比对）：", height=200,
-                             placeholder=">Library_Clone_001\nEVQLVQSGAEVKKPGASVKVSCKASGYTFT...\n...")
+    st.subheader("📚 第二步：候选全长序列库")
+    lib_input = st.text_area("请在此粘贴海量候选库的 FASTA 全序列（引擎将自动穿透骨架寻找目标）：", height=200)
 
 # ================= 数据处理与挖掘 =================
-if st.button("🚀 开始极速同源挖掘", type="primary", use_container_width=True):
+if st.button("🚀 启动扫描引擎", type="primary", use_container_width=True):
     if not seed_input.strip() or not lib_input.strip():
-        st.error("⚠️ 请确保优选分子和候选序列库均已输入数据！")
+        st.error("⚠️ 请确保优选种子和候选序列库均已输入数据！")
     else:
-        with st.spinner("正在构建序列空间并进行全局动态比对，请稍候..."):
+        with st.spinner("雷达正在穿透骨架扫描靶心序列，请稍候..."):
             seeds = parse_fasta(seed_input)
             library = parse_fasta(lib_input)
             
             if not seeds or not library:
                 st.error("⚠️ 序列解析失败，请检查 FASTA 格式是否规范。")
             else:
-                st.success(f"解析成功！已加载 **{len(seeds)}** 个种子分子，**{len(library)}** 条候选序列库。")
-                
                 results = []
                 progress_bar = st.progress(0)
                 
-                # 双重循环比对挖掘
                 for i, (seed_name, seed_seq) in enumerate(seeds.items()):
                     seed_matches = []
+                    # 清理可能用户输入的连字符（如果是 CDR1-2-3 连写）
+                    seed_seq_clean = seed_seq.replace("-", "") 
+                    
                     for lib_name, lib_seq in library.items():
-                        # 跳过完全相同的克隆（名字和序列都一样认为是同一个）
-                        if seed_seq == lib_seq:
-                            continue
-                            
-                        identity, mutations = calculate_similarity(seed_seq, lib_seq)
+                        if seed_seq_clean == lib_seq: continue # 完全一致的排除
                         
-                        if identity * 100 >= sim_threshold:
+                        if "CDR" in mode:
+                            identity, mutations, best_match = scan_motif_in_sequence(seed_seq_clean, lib_seq)
+                        else:
+                            identity, mutations = calculate_global_similarity(seed_seq_clean, lib_seq)
+                            best_match = lib_seq
+                        
+                        if identity >= sim_threshold:
                             seed_matches.append({
-                                '种子分子 (Seed)': seed_name,
-                                '挖掘命中分子 (Hit)': lib_name,
-                                '序列相似度 (%)': round(identity * 100, 2),
+                                '种子名称': seed_name,
+                                '命中序列名称': lib_name,
+                                '核心相似度 (%)': round(identity, 2),
                                 '氨基酸突变数': mutations,
-                                '命中序列长度': len(lib_seq),
-                                '命中序列 (Hit Sequence)': lib_seq
+                                '局部命中片段': best_match if "CDR" in mode else "全局匹配"
                             })
                     
-                    # 按相似度降序排序，并截取 Top K
-                    seed_matches = sorted(seed_matches, key=lambda x: x['序列相似度 (%)'], reverse=True)[:top_k]
+                    # 排序并截断
+                    seed_matches = sorted(seed_matches, key=lambda x: x['核心相似度 (%)'], reverse=True)[:top_k]
                     results.extend(seed_matches)
-                    
-                    # 更新进度条
                     progress_bar.progress((i + 1) / len(seeds))
                 
                 # ================= 结果展示 =================
                 if results:
                     df_results = pd.DataFrame(results)
+                    st.success(f"挖掘完成！共为您锁定 **{len(df_results)}** 条具有高同源价值的变体序列！")
                     
-                    st.markdown("### 🎯 挖掘结果总览")
-                    st.info(f"在 {sim_threshold}% 的相似度阈值下，共为您挖掘到 **{len(df_results)}** 条高潜力同源序列！")
-                    
-                    # 样式高亮函数
                     def highlight_sim(val):
                         if isinstance(val, float):
-                            if val >= 95.0:
-                                return 'background-color: #d4edda; color: #155724; font-weight: bold;'
-                            elif val >= 90.0:
-                                return 'background-color: #fff3cd; color: #856404;'
+                            if val >= 95.0: return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+                            elif val >= 85.0: return 'background-color: #fff3cd; color: #856404;'
                         return ''
                     
-                    st.dataframe(
-                        df_results.style.map(highlight_sim, subset=['序列相似度 (%)']),
-                        use_container_width=True,
-                        height=400
-                    )
+                    st.dataframe(df_results.style.map(highlight_sim, subset=['核心相似度 (%)']), use_container_width=True)
                     
-                    # ================= 导出功能 =================
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         df_results.to_excel(writer, index=False, sheet_name='同源挖掘结果')
@@ -146,9 +178,9 @@ if st.button("🚀 开始极速同源挖掘", type="primary", use_container_widt
                     st.download_button(
                         label="📥 导出同源挖掘报告 (Excel)",
                         data=output,
-                        file_name="同源分子挖掘报告.xlsx",
+                        file_name="CDR_同源分子挖掘报告.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         type="primary"
                     )
                 else:
-                    st.warning("🧐 在当前阈值下，序列库中未能找到与种子分子足够相似的序列。您可以尝试在左侧侧边栏调低【最低同源相似度阈值】。")
+                    st.warning("🧐 在当前阈值下，未能找到相似变体。")
