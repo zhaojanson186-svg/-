@@ -59,27 +59,34 @@ PTM_PATTERNS = {
     'N-糖基化 (N-X-S/T)': r'N[^P][ST]'
 }
 
-def scan_ptm(sequence):
-    """扫描序列中的高危 PTM 基序"""
-    if not sequence or not isinstance(sequence, str):
-        return "无高危 PTM"
-    
-    findings = []
-    # 工业界常重点关注 CDR 区，这里我们进行全长扫描，但返回大致发生位置
-    for ptm_name, pattern in PTM_PATTERNS.items():
-        for match in re.finditer(pattern, sequence):
-            # 标记发生的大致位置
-            idx = match.start() + 1
-            if idx > 25 and idx < 120:
-                region = "CDR附近"
-                if idx < 40: region = "CDR1"
-                elif idx < 70: region = "CDR2"
-                elif idx > 90: region = "CDR3"
-                findings.append(f"[{region}] {ptm_name} @{idx}")
-            else:
-                findings.append(f"[FR] {ptm_name} @{idx}")
-                
-    return " | ".join(findings) if findings else "无高危 PTM"
+import re
+
+def scan_ptms(seq):
+    ptms = []
+    # 1. N-糖基化 (N-X-S/T, X!=P)
+    for m in re.finditer(r'N[^P][ST]', seq):
+        ptms.append(f"N-糖基化 (NIT) @{m.start()+1}")
+    # 2. 脱酰胺 (NG)
+    for m in re.finditer(r'NG', seq):
+        ptms.append(f"脱酰胺 (NG) @{m.start()+1}")
+    # 3. 异构化 (DG)
+    for m in re.finditer(r'DG', seq):
+        ptms.append(f"异构化 (DG) @{m.start()+1}")
+    # 4. 酸断裂 (DP)
+    for m in re.finditer(r'DP', seq):
+        ptms.append(f"酸断裂 (DP) @{m.start()+1}")
+        
+    # ================= 新增：游离半胱氨酸 (Free Cys) 结构扫描 =================
+    # 正常的单链可变区 (VH / VL) 应该只有 2 个保守的半胱氨酸来形成二硫键
+    c_count = seq.count('C')
+    if c_count > 2:
+        c_positions = [i+1 for i, res in enumerate(seq) if res == 'C']
+        ptms.append(f"🚨游离Cys高危风险: 发现 {c_count} 个半胱氨酸 @位点 {c_positions}")
+    elif c_count == 1:
+        c_positions = [i+1 for i, res in enumerate(seq) if res == 'C']
+        ptms.append(f"🚨结构缺陷: 缺失二硫键，仅 1 个半胱氨酸 @位点 {c_positions}")
+        
+    return " | ".join(ptms) if ptms else "无高危 PTM"
 
 @st.cache_data
 def parse_fasta(fasta_text):
