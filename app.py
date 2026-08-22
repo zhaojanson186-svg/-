@@ -61,7 +61,7 @@ PTM_PATTERNS = {
 
 import re
 
-def scan_ptms(seq):
+def scan_ptm(seq):
     ptms = []
     # 1. N-糖基化 (N-X-S/T, X!=P)
     for m in re.finditer(r'N[^P][ST]', seq):
