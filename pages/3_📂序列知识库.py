@@ -33,7 +33,7 @@ def load_database():
     if client:
         try:
             # 尝试打开名为 Antibody_Database 的表格 (请确保您在网盘里新建了这个名字的表)
-            sheet = client.open("Antibody_Database").sheet1
+            sheet = client.open_by_key("1V8x9vN5mp0l2dw2FsCeUSMPdGB-zPDhTGHoE5OrEx82").sheet1
             data = sheet.get_all_records()
             if not data:
                 return pd.DataFrame(columns=["克隆ID", "靶点", "入库时间", "重链序列", "轻链序列", "GRAVY", "Max_HIC_Score", "质控状态", "备注"])
