@@ -34,7 +34,7 @@ def load_database():
         try:
             # 🚀 终极杀招：不再按名字模糊搜索，直接按绝对 ID 强行开门！
             # 这是您表格的专属唯一 ID
-            sheet_id = "1V8x9vN5mp0l2dw2FsCeUSMPdGB-zPDhTGHoE5OrEx82"
+            sheet_id = "1V82x9vN5mp0l2dw2FsCeUSMPdGB-zPDhTGHoE5OrEx8"
             sheet = client.open_by_key(sheet_id).sheet1
             
             data = sheet.get_all_records()
