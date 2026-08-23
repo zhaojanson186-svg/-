@@ -32,17 +32,20 @@ def load_database():
     client = init_gspread()
     if client:
         try:
-            # 尝试打开名为 Antibody_Database 的表格 (请确保您在网盘里新建了这个名字的表)
-            sheet = client.open_by_key("1V8x9vN5mp0l2dw2FsCeUSMPdGB-zPDhTGHoE5OrEx82").sheet1
+            # 🚀 终极杀招：不再按名字模糊搜索，直接按绝对 ID 强行开门！
+            # 这是您表格的专属唯一 ID
+            sheet_id = "1V8x9vN5mp0l2dw2FsCeUSMPdGB-zPDhTGHoE5OrEx82"
+            sheet = client.open_by_key(sheet_id).sheet1
+            
             data = sheet.get_all_records()
+            
+            # 如果表格是空的，提供标准表头
             if not data:
                 return pd.DataFrame(columns=["克隆ID", "靶点", "入库时间", "重链序列", "轻链序列", "GRAVY", "Max_HIC_Score", "质控状态", "备注"])
             return pd.DataFrame(data)
-        except gspread.exceptions.SpreadsheetNotFound:
-            st.error("⚠️ 未在您的 Google Drive 中找到名为 `Antibody_Database` 的表格，请先创建。")
-            return None
-        except RefreshError:
-            st.error("⚠️ 您的授权 Token 已过期，请重新生成并更新 Secrets。")
+            
+        except Exception as e:
+            st.error(f"⚠️ 强行读取表格失败，原因: {e}")
             return None
     return None
 
