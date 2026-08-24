@@ -68,35 +68,53 @@ def save_to_db(df_to_save):
 # ================= 智能字段映射引擎 =================
 def smart_extract_columns(raw_df):
     """
-    智能分析原始 Excel 的表头，自动映射到我们的 10 个目标字段
+    智能分析原始 Excel 的表头，自带中英双语词典，并解决重名列冲突（优先取靠左的最终数据）
     """
     mapping = {}
+    mapped_targets = set() # 用于防止重复映射，确保重名列（如两个 Conc）只取第一个
     raw_columns = raw_df.columns.tolist()
     
     for col in raw_columns:
         # 清理表头名称中的换行符和多余空格，统一转大写
         col_str = str(col).replace('\n', ' ').strip().upper()
+        target = None
         
-        if "PROTEIN NAME" in col_str:
-            mapping[col] = "Protein Name"
-        elif "LOT NO" in col_str:
-            mapping[col] = "Lot No"
-        elif "BUFFER" in col_str:
-            mapping[col] = "Buffer"
-        elif "CONCENTRATION" in col_str:
-            mapping[col] = "Concentration(ug/ul)"
-        elif "TOTAL" in col_str and "MG" in col_str:
-            mapping[col] = "Total(mg)"
-        elif "YIELD" in col_str:
-            mapping[col] = "Yield(mg/L)"
-        elif "SEC-HPLC" in col_str:
-            mapping[col] = "Purity by SEC-HPLC(%)"
-        elif "SDS-PAGE" in col_str and "CE" not in col_str:
-            mapping[col] = "Purity by SDS-PAGE under NR(%)"
-        elif "M.W" in col_str and "REDUCING" not in col_str:
-            mapping[col] = "M.W.(KDa)"
-        elif col_str == "PI":
-            mapping[col] = "PI"
+        # 1. 蛋白名称
+        if "PROTEIN NAME" in col_str or "项目名称" in col_str or "蛋白名称" in col_str:
+            target = "Protein Name"
+        # 2. 批号
+        elif "LOT" in col_str or "批号" in col_str:
+            target = "Lot No"
+        # 3. 缓冲液
+        elif "BUFFER" in col_str or "缓冲液" in col_str:
+            target = "Buffer"
+        # 4. 浓度
+        elif "CONCENTRATION" in col_str or "CONC" in col_str or "浓度" in col_str:
+            target = "Concentration(ug/ul)"
+        # 5. 总量
+        elif ("TOTAL" in col_str and "MG" in col_str) or "AMOUNT" in col_str or "总量" in col_str:
+            target = "Total(mg)"
+        # 6. 产量/滴度
+        elif "YIELD" in col_str or "TITER" in col_str or "产量" in col_str or "表达量" in col_str:
+            target = "Yield(mg/L)"
+        # 7. SEC-HPLC 纯度 (如果只写了 Purity，默认先往 SEC 归类)
+        elif "SEC-HPLC" in col_str or ("PURITY" in col_str and "SEC" in col_str) or "PURITY" in col_str or "纯度" in col_str:
+            target = "Purity by SEC-HPLC(%)"
+        # 8. SDS-PAGE 纯度
+        elif ("SDS-PAGE" in col_str and "CE" not in col_str):
+            target = "Purity by SDS-PAGE under NR(%)"
+        # 9. 分子量
+        elif ("M.W" in col_str and "REDUCING" not in col_str) or "分子量" in col_str or "KD" in col_str or "MW" in col_str:
+            target = "M.W.(KDa)"
+        # 10. PI
+        elif col_str == "PI" or "等电点" in col_str:
+            target = "PI"
+            
+        # 核心防撞车逻辑：只有当该目标字段还没有被映射过时，才进行映射。
+        # 这样当遇到 Final 和 AC 下面两个同名的 Conc 时，左边的 Final 会被优先截获。
+        if target and target not in mapped_targets:
+            mapping[col] = target
+            mapped_targets.add(target)
             
     # 根据映射关系，截取子表并重命名列
     extracted_df = raw_df[list(mapping.keys())].copy()
@@ -106,42 +124,63 @@ def smart_extract_columns(raw_df):
 
 # ================= UI 界面 =================
 st.title("🧪 蛋白样品自动入库系统 (Smart Paste)")
-st.markdown("突破加密文件限制！只需从原始交付大表里 **全选并复制 (包含表头)**，粘贴到下方。系统将自动过滤无关列，精准提取 10 项核心 QC 记录并安全入库。")
+st.markdown("突破加密文件限制！只需从原始交付大表里 **全选并复制 (包含表头)**，粘贴到下方。系统内置双语视觉引擎，**无视多级合并表头与中文列名**，精准提取 10 项核心 QC 记录。")
 
-pasted_data = st.text_area("📋 在此粘贴从 Excel 复制的数据 (请务必包含表头行)：", height=300, 
-                           placeholder="请在您的 Excel 文件中，选中包含 Order ID, Protein Name, Lot No... 等所有内容的区域（包括表头），按 Ctrl+C，然后在此处 Ctrl+V。")
+pasted_data = st.text_area("📋 在此粘贴从 Excel 复制的数据 (连同乱七八糟的表头一起复制即可)：", height=300, 
+                           placeholder="支持中英双语！选中包含 项目名称、Conc、purity 等区域，Ctrl+C 然后在此处 Ctrl+V。")
 
 if pasted_data.strip():
     with st.spinner("🤖 正在智能解析粘贴的数据..."):
         try:
-            # 模拟 Excel 的复制逻辑：以制表符 (\t) 作为列的分隔符
-            raw_df = pd.read_csv(io.StringIO(pasted_data), sep='\t')
+            # 🚀 极其强壮的“不规则抗干扰”解析逻辑（完美解决 Expected x fields saw y 报错）
+            # 按换行符切分每一行
+            lines = pasted_data.strip("\r\n").split('\n')
+            # 按制表符切分每个单元格
+            data_matrix = [line.split('\t') for line in lines]
+            
+            # 找到全表最长的一行（容错 Excel 复制时末尾多出的空白格子）
+            max_cols = max(len(row) for row in data_matrix)
+            
+            # 补齐所有数据行的空白，使矩阵完美对齐，先不设列名
+            for row in data_matrix:
+                while len(row) < max_cols:
+                    row.append("")
+                    
+            raw_df = pd.DataFrame(data_matrix)
+            
+            # 🚀 新增：雷达自动扫描“真实表头”所在行
+            best_row_idx = 0
+            max_matches = 0
+            # 设置中英高频关键词雷达
+            keywords = ['PROTEIN', 'LOT', 'CONC', 'AMOUNT', 'YIELD', 'PURITY', '项目', '分子', 'PI', '浓度', '纯度']
+            
+            # 扫描前 5 行，谁包含的关键词最多，谁就是真正的列名行
+            for idx, row in raw_df.head(5).iterrows():
+                row_str = " ".join([str(x).upper() for x in row.tolist()])
+                matches = sum(1 for kw in keywords if kw in row_str)
+                if matches > max_matches:
+                    max_matches = matches
+                    best_row_idx = idx
+            
+            # 设定真正的表头，并直接砍掉它上面没用的多级合并垃圾行
+            raw_df.columns = raw_df.iloc[best_row_idx].astype(str)
+            raw_df = raw_df.iloc[best_row_idx+1:].reset_index(drop=True)
             
             if raw_df.empty:
-                st.warning("⚠️ 解析到的数据为空，请确保复制了数据行（不只是空行或纯文本）。")
+                st.warning("⚠️ 解析到的数据为空，请确保复制了真实的数据行。")
             else:
                 # 启动智能提取引擎
                 clean_df, matched_cols = smart_extract_columns(raw_df)
                 
                 # 检查最核心的两个标识符是否找到
                 if "Protein Name" not in clean_df.columns or "Lot No" not in clean_df.columns:
-                    st.warning("⚠️ 未能识别到核心标识 (Protein Name 或 Lot No)，请检查复制的区域是否完整包含了表头行。")
+                    st.warning("⚠️ 未能识别到核心标识 (Protein Name/项目名称 或 Lot No/批号)，请检查复制区域。")
                 else:
-                    st.success(f"✅ 解析成功！从 {len(raw_df.columns)} 列杂乱数据中，精准提取了 {len(matched_cols)} 列核心指标，共计 {len(clean_df)} 个样品。")
+                    st.success(f"✅ 解析成功！从极度杂乱的格式中精准过滤出 {len(matched_cols)} 列核心指标，共计 {len(clean_df)} 个样品。")
                     
                     st.markdown("### 👁️ 提取结果预览验证")
                     st.dataframe(clean_df, use_container_width=True)
                     
                     # 提交按钮
                     st.markdown("---")
-                    if st.button("🚀 确认无误，一键批量入库 (Save to DB)", type="primary", use_container_width=True):
-                        with st.spinner("正在安全同步至 Google Drive 知识库..."):
-                            success, msg = save_to_db(clean_df)
-                            if success:
-                                st.balloons()
-                                st.success(msg)
-                            else:
-                                st.error(msg)
-                                
-        except Exception as e:
-            st.error(f"解析粘贴的内容时发生错误，请确保是从 Excel 表格直接复制的结构化数据。底层错误: {e}")
+                    if st.button("🚀 确认无误，一键批量追加至云端数据库 (Save to DB)", type="primary", use_container_width=True):
