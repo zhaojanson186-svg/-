@@ -97,15 +97,16 @@ def smart_extract_columns(raw_text):
         blob = " ".join([str(raw_df.iat[i, j]).upper() for i in range(scan_depth)])
         
         target = None
-        if "PROTEIN NAME" in blob or "项目名称" in blob or "蛋白名称" in blob:
+        # 👇 在这里加入了 "分子名称" 和 "分子名" 等扩展词汇
+        if "PROTEIN NAME" in blob or "项目名称" in blob or "蛋白名称" in blob or "分子名称" in blob or "分子名" in blob:
             target = "Protein Name"
-        elif "LOT" in blob or "批号" in blob:
+        elif "LOT" in blob or "批号" in blob or "批次" in blob:
             target = "Lot No"
-        elif "BUFFER" in blob or "缓冲液" in blob or "纯化步骤" in blob:
+        elif "BUFFER" in blob or "缓冲液" in blob or "纯化步骤" in blob or "纯化方式" in blob:
             target = "Buffer"
         elif "CONCENTRATION" in blob or "CONC" in blob or "浓度" in blob:
             target = "Concentration(ug/ul)"
-        elif ("TOTAL" in blob and "MG" in blob) or "AMOUNT" in blob or "总量" in blob:
+        elif ("TOTAL" in blob and "MG" in blob) or "AMOUNT" in blob or "总量" in blob or "总计" in blob:
             target = "Total(mg)"
         elif "YIELD" in blob or "TITER" in blob or "产量" in blob or "表达量" in blob:
             target = "Yield(mg/L)"
@@ -139,8 +140,8 @@ def smart_extract_columns(raw_text):
         val_str = str(val).strip().upper()
         # 空白行或者由于合并单元格产生的 NaN 绝对不是数据
         if val_str in ["", "NAN", "NONE", "NAT"]: return False
-        # 如果文字就是表头本身，说明这一行还在表头废料区
-        header_keywords = ["项目名称", "PROTEIN NAME", "蛋白名称", "LOT号", "LOT NO", "LOT", "批号"]
+        # 👇 同样在这里补充 "分子名称" 等过滤词，防止把表头当成数据写入
+        header_keywords = ["项目名称", "PROTEIN NAME", "蛋白名称", "分子名称", "分子名", "LOT号", "LOT NO", "LOT", "批号"]
         if val_str in header_keywords: return False
         return True
         
