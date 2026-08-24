@@ -19,7 +19,7 @@ def init_gspread():
         return None, str(e)
 
 def save_to_db(df_to_save):
-    """批量写入数据库"""
+    """批量写入数据库（带有防覆盖绝对坐标写入逻辑）"""
     client, error_msg = init_gspread()
     if not client:
         return False, f"数据库连接失败: {error_msg}"
@@ -49,9 +49,16 @@ def save_to_db(df_to_save):
         df_final = df_clean[target_columns]
         data_to_insert = df_final.values.tolist()
         
-        # 批量追加
-        sheet.append_rows(data_to_insert)
-        return True, f"成功将 {len(data_to_insert)} 条样品记录写入云端数据库！"
+        # ====== 修复覆盖问题的核心防线 ======
+        # 获取当前表格真实存在的行数（包含表头）
+        existing_rows = sheet.get_all_values()
+        next_empty_row = len(existing_rows) + 1
+        
+        # 强制从 A 列的真实空白行开始定点写入，100% 杜绝覆盖
+        sheet.update(f"A{next_empty_row}", data_to_insert)
+        # ====================================
+        
+        return True, f"成功将 {len(data_to_insert)} 条样品记录安全写入云端数据库的第 {next_empty_row} 行！"
         
     except gspread.exceptions.SpreadsheetNotFound:
         return False, "找不到名为 Protein_Sample_DB 的表格，请检查名称和共享权限。"
