@@ -184,3 +184,13 @@ if pasted_data.strip():
                     # 提交按钮
                     st.markdown("---")
                     if st.button("🚀 确认无误，一键批量追加至云端数据库 (Save to DB)", type="primary", use_container_width=True):
+                        with st.spinner("正在将数据安全写入云端，请稍候..."):
+                            success, msg = save_to_db(clean_df)
+                            if success:
+                                st.success(msg)
+                                st.balloons()
+                            else:
+                                st.error(f"写入失败: {msg}")
+
+        except Exception as e:
+            st.error(f"解析或处理数据时发生意外错误: {str(e)}")
