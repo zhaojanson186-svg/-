@@ -66,117 +66,111 @@ def save_to_db(df_to_save):
         return False, str(e)
 
 # ================= 智能字段映射引擎 =================
-def smart_extract_columns(raw_df):
+def smart_extract_columns(raw_text):
     """
-    智能分析原始 Excel 的表头，自带中英双语词典，并解决重名列冲突（优先取靠左的最终数据）
+    全新 V3 提取引擎 (终极地狱级表格克星)：
+    1. 纯手工构建矩阵：100% 杜绝因格式错乱导致的读取崩溃。
+    2. 垂直压缩前5行：无视多级合并表头产生的换行和跨列。
+    3. 右到左 (Right-to-Left) 扫描：绝对优先锁定最右侧的 Final 最终交付数据。
+    4. 主键过滤法：精准剔除多级表头中因合并单元格产生的碎片化空行。
     """
-    mapping = {}
-    mapped_targets = set() # 用于防止重复映射，确保重名列（如两个 Conc）只取第一个
-    raw_columns = raw_df.columns.tolist()
+    # 1. 纯手工构建对齐矩阵，杜绝 Expected X fields 报错
+    lines = raw_text.strip("\r\n").split('\n')
+    data_matrix = [line.split('\t') for line in lines]
     
-    for col in raw_columns:
-        # 清理表头名称中的换行符和多余空格，统一转大写
-        col_str = str(col).replace('\n', ' ').strip().upper()
-        target = None
+    max_cols = max(len(row) for row in data_matrix) if data_matrix else 0
+    for row in data_matrix:
+        while len(row) < max_cols:
+            row.append("")
+            
+    raw_df = pd.DataFrame(data_matrix, dtype=str)
+    
+    mapping = {}
+    mapped_targets = set()
+    
+    num_cols = len(raw_df.columns)
+    scan_depth = min(6, len(raw_df))
+    
+    # 2. 从右向左遍历列，确保右侧的 Final 列被优先记录
+    for j in range(num_cols - 1, -1, -1):
+        # 将前几行的文本垂直合并为一个超级字符串 blob
+        blob = " ".join([str(raw_df.iat[i, j]).upper() for i in range(scan_depth)])
         
-        # 1. 蛋白名称
-        if "PROTEIN NAME" in col_str or "项目名称" in col_str or "蛋白名称" in col_str:
+        target = None
+        if "PROTEIN NAME" in blob or "项目名称" in blob or "蛋白名称" in blob:
             target = "Protein Name"
-        # 2. 批号
-        elif "LOT" in col_str or "批号" in col_str:
+        elif "LOT" in blob or "批号" in blob:
             target = "Lot No"
-        # 3. 缓冲液
-        elif "BUFFER" in col_str or "缓冲液" in col_str:
+        elif "BUFFER" in blob or "缓冲液" in blob or "纯化步骤" in blob:
             target = "Buffer"
-        # 4. 浓度
-        elif "CONCENTRATION" in col_str or "CONC" in col_str or "浓度" in col_str:
+        elif "CONCENTRATION" in blob or "CONC" in blob or "浓度" in blob:
             target = "Concentration(ug/ul)"
-        # 5. 总量
-        elif ("TOTAL" in col_str and "MG" in col_str) or "AMOUNT" in col_str or "总量" in col_str:
+        elif ("TOTAL" in blob and "MG" in blob) or "AMOUNT" in blob or "总量" in blob:
             target = "Total(mg)"
-        # 6. 产量/滴度
-        elif "YIELD" in col_str or "TITER" in col_str or "产量" in col_str or "表达量" in col_str:
+        elif "YIELD" in blob or "TITER" in blob or "产量" in blob or "表达量" in blob:
             target = "Yield(mg/L)"
-        # 7. SEC-HPLC 纯度 (如果只写了 Purity，默认先往 SEC 归类)
-        elif "SEC-HPLC" in col_str or ("PURITY" in col_str and "SEC" in col_str) or "PURITY" in col_str or "纯度" in col_str:
+        elif "SEC-HPLC" in blob or ("PURITY" in blob and "SEC" in blob) or "PURITY" in blob or "纯度" in blob:
             target = "Purity by SEC-HPLC(%)"
-        # 8. SDS-PAGE 纯度
-        elif ("SDS-PAGE" in col_str and "CE" not in col_str):
+        elif ("SDS-PAGE" in blob and "CE" not in blob):
             target = "Purity by SDS-PAGE under NR(%)"
-        # 9. 分子量
-        elif ("M.W" in col_str and "REDUCING" not in col_str) or "分子量" in col_str or "KD" in col_str or "MW" in col_str:
+        elif ("M.W" in blob and "REDUCING" not in blob) or "分子量" in blob or "KD" in blob or "MW" in blob:
             target = "M.W.(KDa)"
-        # 10. PI
-        elif col_str == "PI" or "等电点" in col_str:
+        elif "PI" in blob or "等电点" in blob:
             target = "PI"
             
-        # 核心防撞车逻辑：只有当该目标字段还没有被映射过时，才进行映射。
-        # 这样当遇到 Final 和 AC 下面两个同名的 Conc 时，左边的 Final 会被优先截获。
+        # 只有当该目标指标还没被记录过时才映射，防止被左侧的 AC 过程数据篡改
         if target and target not in mapped_targets:
-            mapping[col] = target
+            mapping[j] = target
             mapped_targets.add(target)
             
-    # 根据映射关系，截取子表并重命名列
-    extracted_df = raw_df[list(mapping.keys())].copy()
-    extracted_df.rename(columns=mapping, inplace=True)
+    if not mapping:
+        return pd.DataFrame(), {}
+        
+    # 恢复正常的从左到右列序
+    sorted_mapping = dict(sorted(mapping.items()))
+    extracted_df = raw_df[list(sorted_mapping.keys())].copy()
+    extracted_df.rename(columns=sorted_mapping, inplace=True)
     
-    return extracted_df, mapping
+    # 3. 寻找主键列来判断这一行是不是真实的蛋白数据
+    check_col = "Protein Name" if "Protein Name" in extracted_df.columns else (
+                "Lot No" if "Lot No" in extracted_df.columns else list(sorted_mapping.values())[0])
+                
+    def is_real_data(val):
+        val_str = str(val).strip().upper()
+        # 空白行或者由于合并单元格产生的 NaN 绝对不是数据
+        if val_str in ["", "NAN", "NONE", "NAT"]: return False
+        # 如果文字就是表头本身，说明这一行还在表头废料区
+        header_keywords = ["项目名称", "PROTEIN NAME", "蛋白名称", "LOT号", "LOT NO", "LOT", "批号"]
+        if val_str in header_keywords: return False
+        return True
+        
+    # 精准切除表头碎片行，留下纯净的数据
+    clean_df = extracted_df[extracted_df[check_col].apply(is_real_data)].copy()
+    clean_df.reset_index(drop=True, inplace=True)
+    
+    return clean_df, sorted_mapping
 
 # ================= UI 界面 =================
 st.title("🧪 蛋白样品自动入库系统 (Smart Paste)")
-st.markdown("突破加密文件限制！只需从原始交付大表里 **全选并复制 (包含表头)**，粘贴到下方。系统内置双语视觉引擎，**无视多级合并表头与中文列名**，精准提取 10 项核心 QC 记录。")
+st.markdown("突破加密文件限制！只需从原始交付大表里 **全选并复制 (包含表头)**，粘贴到下方。系统将自动过滤无关列，精准提取 10 项核心 QC 记录并安全入库。")
 
-pasted_data = st.text_area("📋 在此粘贴从 Excel 复制的数据 (连同乱七八糟的表头一起复制即可)：", height=300, 
-                           placeholder="支持中英双语！选中包含 项目名称、Conc、purity 等区域，Ctrl+C 然后在此处 Ctrl+V。")
+pasted_data = st.text_area("📋 在此粘贴从 Excel 复制的数据 (请务必包含表头行)：", height=300, 
+                           placeholder="请在您的 Excel 文件中，选中包含 Order ID, Protein Name, Lot No... 等所有内容的区域（包括表头），按 Ctrl+C，然后在此处 Ctrl+V。")
 
 if pasted_data.strip():
-    with st.spinner("🤖 正在智能解析粘贴的数据..."):
+    with st.spinner("🤖 正在穿透多级表头进行深度解析..."):
         try:
-            # 🚀 极其强壮的“不规则抗干扰”解析逻辑（完美解决 Expected x fields saw y 报错）
-            # 按换行符切分每一行
-            lines = pasted_data.strip("\r\n").split('\n')
-            # 按制表符切分每个单元格
-            data_matrix = [line.split('\t') for line in lines]
+            # 启动 V3 智能提取引擎
+            clean_df, matched_cols = smart_extract_columns(pasted_data)
             
-            # 找到全表最长的一行（容错 Excel 复制时末尾多出的空白格子）
-            max_cols = max(len(row) for row in data_matrix)
-            
-            # 补齐所有数据行的空白，使矩阵完美对齐，先不设列名
-            for row in data_matrix:
-                while len(row) < max_cols:
-                    row.append("")
-                    
-            raw_df = pd.DataFrame(data_matrix)
-            
-            # 🚀 新增：雷达自动扫描“真实表头”所在行
-            best_row_idx = 0
-            max_matches = 0
-            # 设置中英高频关键词雷达
-            keywords = ['PROTEIN', 'LOT', 'CONC', 'AMOUNT', 'YIELD', 'PURITY', '项目', '分子', 'PI', '浓度', '纯度']
-            
-            # 扫描前 5 行，谁包含的关键词最多，谁就是真正的列名行
-            for idx, row in raw_df.head(5).iterrows():
-                row_str = " ".join([str(x).upper() for x in row.tolist()])
-                matches = sum(1 for kw in keywords if kw in row_str)
-                if matches > max_matches:
-                    max_matches = matches
-                    best_row_idx = idx
-            
-            # 设定真正的表头，并直接砍掉它上面没用的多级合并垃圾行
-            raw_df.columns = raw_df.iloc[best_row_idx].astype(str)
-            raw_df = raw_df.iloc[best_row_idx+1:].reset_index(drop=True)
-            
-            if raw_df.empty:
-                st.warning("⚠️ 解析到的数据为空，请确保复制了真实的数据行。")
+            if clean_df.empty:
+                st.warning("⚠️ 解析到的有效数据为空。请确保复制了真实的数据行，且包含核心指标列。")
             else:
-                # 启动智能提取引擎
-                clean_df, matched_cols = smart_extract_columns(raw_df)
-                
                 # 检查最核心的两个标识符是否找到
                 if "Protein Name" not in clean_df.columns or "Lot No" not in clean_df.columns:
-                    st.warning("⚠️ 未能识别到核心标识 (Protein Name/项目名称 或 Lot No/批号)，请检查复制区域。")
+                    st.warning("⚠️ 未能识别到核心标识 (Protein Name 或 Lot No)，请检查复制的区域是否完整包含了表头行。")
                 else:
-                    st.success(f"✅ 解析成功！从极度杂乱的格式中精准过滤出 {len(matched_cols)} 列核心指标，共计 {len(clean_df)} 个样品。")
+                    st.success(f"✅ 解析成功！从极度错综复杂的格式中精准穿透，滤出 {len(matched_cols)} 列核心指标，共计 {len(clean_df)} 个样品。")
                     
                     st.markdown("### 👁️ 提取结果预览验证")
                     st.dataframe(clean_df, use_container_width=True)
