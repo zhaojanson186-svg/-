@@ -99,8 +99,8 @@ def smart_extract_columns(raw_text):
         blob = " ".join([str(raw_df.iat[i, j]).upper() for i in range(scan_depth)])
         
         target = None
-        # 👇 扩充词典：加入了 "PROJECT NAME"
-        if "PROTEIN NAME" in blob or "PROJECT NAME" in blob or "项目名称" in blob or "蛋白名称" in blob or "分子名称" in blob or "分子名" in blob:
+        # 👇 扩充词典：加入了极简缩写 "NAME"
+        if "PROTEIN NAME" in blob or "PROJECT NAME" in blob or "项目名称" in blob or "蛋白名称" in blob or "分子名称" in blob or "分子名" in blob or "NAME" in blob:
             target = "Protein Name"
         elif "LOT" in blob or "批号" in blob or "批次" in blob:
             target = "Lot No"
@@ -112,10 +112,10 @@ def smart_extract_columns(raw_text):
             target = "Total(mg)"
         elif "YIELD" in blob or "TITER" in blob or "产量" in blob or "表达量" in blob:
             target = "Yield(mg/L)"
-        # 👇 强化纯度识别：加入 280NM 优先级，防止被辅助纯度列干扰
         elif "SEC-HPLC" in blob or "280NM" in blob or "280" in blob or ("PURITY" in blob and "SEC" in blob) or "PURITY" in blob or "纯度" in blob:
             target = "Purity by SEC-HPLC(%)"
-        elif ("SDS-PAGE" in blob and "CE" not in blob):
+        # 👇 扩充词典：加入 CE-SDS 作为纯度的合法指标
+        elif ("SDS-PAGE" in blob and "CE" not in blob) or "CE-SDS" in blob:
             target = "Purity by SDS-PAGE under NR(%)"
         elif ("M.W" in blob and "REDUCING" not in blob) or "分子量" in blob or "KD" in blob or "MW" in blob:
             target = "M.W.(KDa)"
@@ -143,8 +143,8 @@ def smart_extract_columns(raw_text):
         val_str = str(val).strip().upper()
         # 空白行或者由于合并单元格产生的 NaN 绝对不是数据
         if val_str in ["", "NAN", "NONE", "NAT"]: return False
-        # 👇 同样在这里补充 "PROJECT NAME" 作为表头碎片过滤词
-        header_keywords = ["项目名称", "PROJECT NAME", "PROTEIN NAME", "蛋白名称", "分子名称", "分子名", "LOT号", "LOT NO", "LOT", "批号"]
+        # 👇 同样在这里补充 "NAME" 作为表头碎片过滤词
+        header_keywords = ["项目名称", "PROJECT NAME", "PROTEIN NAME", "蛋白名称", "分子名称", "分子名", "LOT号", "LOT NO", "LOT", "批号", "NAME"]
         if val_str in header_keywords: return False
         return True
         
