@@ -44,19 +44,46 @@ def load_all_data():
         return None, None, f"读取数据时发生错误: {str(e)}"
 
 # ================= 数据清洗与融合引警 =================
+import re
+
 def merge_databases(df_seq, df_sample):
     if df_seq.empty or df_sample.empty:
         return pd.DataFrame()
         
-    # 为了保证匹配的鲁棒性，去除空格并统一大写进行关联
-    df_seq['Match_Key'] = df_seq['克隆ID'].astype(str).str.strip().str.upper()
-    df_sample['Match_Key'] = df_sample['Protein Name'].astype(str).str.strip().str.upper()
+    # 为了保证匹配的鲁棒性，去除空格并统一大写进行准备
+    df_seq['Clean_ID'] = df_seq['克隆ID'].astype(str).str.strip().str.upper()
+    df_sample['Clean_Name'] = df_sample['Protein Name'].astype(str).str.strip().str.upper()
     
-    # 执行内连接 (Inner Join) - 只保留既有序列又有表达结果的“完美闭环数据”
-    df_merged = pd.merge(df_seq, df_sample, on='Match_Key', how='inner')
+    merged_records = []
+    
+    # 执行智能模糊交叉比对
+    for _, seq_row in df_seq.iterrows():
+        seq_name = seq_row['Clean_ID']
+        if not seq_name or seq_name in ['NAN', 'NONE', '']: continue
+        
+        for _, sample_row in df_sample.iterrows():
+            sample_name = sample_row['Clean_Name']
+            if not sample_name or sample_name in ['NAN', 'NONE', '']: continue
+            
+            # 智能模糊匹配：核心名称互相包含即可
+            # 找出短名字和长名字
+            short_n, long_n = (seq_name, sample_name) if len(seq_name) < len(sample_name) else (sample_name, seq_name)
+            
+            # 💡 核心防御正则：短名称的前后不能紧挨着其他字母或数字（必须是边界或如 - _ 等连接符）
+            # 这能完美防止 "M1" 错误匹配到 "M12"
+            pattern = r'(?:^|[^a-zA-Z0-9])' + re.escape(short_n) + r'(?:[^a-zA-Z0-9]|$)'
+            
+            if re.search(pattern, long_n):
+                # 匹配成功，将两张表的这一行数据合并为一条大记录
+                combined = {**seq_row.to_dict(), **sample_row.to_dict()}
+                # 设立一个统一的 Match_Key 用于前端展示和去重计数
+                combined['Match_Key'] = seq_row['克隆ID']
+                merged_records.append(combined)
+                
+    df_merged = pd.DataFrame(merged_records)
     
     # 按照表达时间倒序排列，优先看最新批次
-    if 'Record Time' in df_merged.columns:
+    if not df_merged.empty and 'Record Time' in df_merged.columns:
         df_merged.sort_values(by='Record Time', ascending=False, inplace=True)
         
     return df_merged
