@@ -3,6 +3,7 @@ import pandas as pd
 import gspread
 from datetime import datetime
 import io
+import csv
 
 st.set_page_config(page_title="蛋白样品智能入库系统", page_icon="🧪", layout="wide")
 
@@ -74,9 +75,10 @@ def smart_extract_columns(raw_text):
     3. 右到左 (Right-to-Left) 扫描：绝对优先锁定最右侧的 Final 最终交付数据。
     4. 主键过滤法：精准剔除多级表头中因合并单元格产生的碎片化空行。
     """
-    # 1. 纯手工构建对齐矩阵，杜绝 Expected X fields 报错
-    lines = raw_text.strip("\r\n").split('\n')
-    data_matrix = [line.split('\t') for line in lines]
+    # 1. 完美处理 Excel 单元格内部的 Alt+Enter 换行符
+    f = io.StringIO(raw_text.strip())
+    reader = csv.reader(f, delimiter='\t', quotechar='"')
+    data_matrix = list(reader)
     
     max_cols = max(len(row) for row in data_matrix) if data_matrix else 0
     for row in data_matrix:
