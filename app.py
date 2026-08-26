@@ -55,9 +55,14 @@ def save_batch_to_database(target, notes, full_df):
             rows_to_insert.append(new_row)
         
         if rows_to_insert:
-            # 批量追加所有行，速度极快
-            sheet.append_rows(rows_to_insert)
-            return True, f"成功将 {len(rows_to_insert)} 条无冗余 Fv 序列存入知识库！"
+            # ====== 修复覆盖问题的核心防线 ======
+            existing_rows = sheet.get_all_values()
+            next_empty_row = len(existing_rows) + 1
+            
+            # 使用 update 进行绝对坐标的精准打击
+            sheet.update(f"A{next_empty_row}", rows_to_insert)
+            # ====================================
+            return True, f"成功入库 {len(rows_to_insert)} 条序列！"
         else:
             return False, "没有可以入库的数据。"
     
@@ -171,7 +176,8 @@ if st.session_state.analysis_started and fasta_input:
                 seq_id = row['ID']
                 seq = row['Sequence']
                 
-                match = re.search(r"^(.*)[_ \-](VH|VL|VHH|LC|HC)(\d*)$", seq_id, re.IGNORECASE)
+                # 👇 升级了这里的正则表达式，增加 ([_ \-]?\d*) 允许 VH 后面带有横杠或下划线的数字后缀 (如 VH-1, VL_2)
+                match = re.search(r"^(.*)[_ \-](VH|VL|VHH|LC|HC)([_ \-]?\d*)$", seq_id, re.IGNORECASE)
                 if match:
                     base_name = match.group(1).strip()
                     chain_type = match.group(2).upper()
