@@ -283,13 +283,15 @@ if st.session_state.analysis_started and fasta_input:
                         '唯一性 (Unique)': unique_flag, '包含相同配对数': count, '代表分子名': rep_name,
                         '具体链组合': chain_details, '合并来源分子名': merged_names, '重链_pI': group.iloc[0]['重链_pI'],
                         '轻链_pI': group.iloc[0]['轻链_pI'], 'ΔpI': delta_pi, 'Fv质控状态': qc_status,
-                        'PTM风险汇总': group.iloc[0]['PTM风险汇总'], '_Fv_Seq_Fingerprint': fp,
+                        'PTM风险汇总': group.iloc[0]['PTM风险汇总'],
+                        '重链序列': group.iloc[0]['_VH_Seq'], '轻链序列': group.iloc[0]['_VL_Seq'],
+                        '_Fv_Seq_Fingerprint': fp,
                         '_VH_ID': group.iloc[0]['_VH_ID'], '_VL_ID': group.iloc[0]['_VL_ID'],
                         '_VH_Seq': group.iloc[0]['_VH_Seq'], '_VL_Seq': group.iloc[0]['_VL_Seq']
                     })
                     
                 df_paired_full = pd.DataFrame(cluster_data).sort_values(by=['包含相同配对数', '代表分子名'], ascending=[False, True])
-                display_cols = ['唯一性 (Unique)', '包含相同配对数', '代表分子名', '具体链组合', '合并来源分子名', '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总']
+                display_cols = ['唯一性 (Unique)', '包含相同配对数', '代表分子名', '具体链组合', '合并来源分子名', '重链_pI', '轻链_pI', 'ΔpI', 'Fv质控状态', 'PTM风险汇总', '重链序列', '轻链序列']
                 df_paired_final = df_paired_full[display_cols]
                 
                 def highlight_fv(row):
@@ -382,8 +384,6 @@ if st.session_state.analysis_started and fasta_input:
                         df_paired_final.to_excel(writer, index=False, sheet_name='Fv组装与排重')
                     if df_diverse_final is not None and not df_diverse_final.empty:
                         df_export_diverse = df_diverse_final[['建议纯化优先级'] + display_cols].copy()
-                        df_export_diverse['重链序列'] = df_diverse_final['_VH_Seq']
-                        df_export_diverse['轻链序列'] = df_diverse_final['_VL_Seq']
                         df_export_diverse.to_excel(writer, index=False, sheet_name='推荐纯化池')
                 
                 st.markdown("---")
